@@ -7,6 +7,7 @@ import streamlit as st
 
 from tg_analyst import jobs
 from tg_analyst.dashboard.common import session_factory
+from tg_analyst.ingest.groupref import GroupRefError, parse_group_ref
 
 
 def jobs_page() -> None:
@@ -20,7 +21,7 @@ def jobs_page() -> None:
         st.subheader("Fetch group history")
         group = st.text_input(
             "Group",
-            placeholder="@group_username, t.me/link or numeric id",
+            placeholder="@username, t.me/… link, Telegram Web link or numeric id",
             help="Your Telegram account must be a member of the group.",
         )
         c1, c2, c3 = st.columns(3)
@@ -35,10 +36,12 @@ def jobs_page() -> None:
         enrich_after = c3.checkbox("Run sentiment analysis afterwards", value=True)
         st.caption("Re-running a group resumes from the last fetched message.")
         if st.form_submit_button("Queue back-fill", type="primary"):
-            name = _normalize_group(group)
-            if not name:
-                st.error("Enter a group username, link or id.")
-            else:
+            try:
+                name = parse_group_ref(group)
+            except GroupRefError as exc:
+                name = None
+                st.error(str(exc))
+            if name:
                 with session_factory()() as s:
                     job = jobs.enqueue(
                         s,
@@ -106,12 +109,6 @@ def _job_table() -> None:
     if failed:
         with st.expander(f"Error details for job #{failed[0].id}"):
             st.code(failed[0].error)
-
-
-def _normalize_group(raw: str) -> str:
-    raw = raw.strip().removeprefix("https://").removeprefix("http://")
-    raw = raw.removeprefix("t.me/").removeprefix("telegram.me/")
-    return raw.strip("/ ")
 
 
 jobs_page()

@@ -90,15 +90,20 @@ def _run_backfill(factory: sessionmaker, params: dict) -> str:
 
     async def run() -> int:
         client = make_client(settings.tg_session_path, api_id, api_hash)
-        async with client:
+        # Not `async with client`: that calls client.start(), which prompts for a phone
+        # number on stdin and dies with EOFError in a background worker.
+        await client.connect()
+        try:
             if not await client.is_user_authorized():
                 raise RuntimeError(
-                    "Telegram session is not logged in. Run `tg-analyst login` once "
-                    "(Docker: `docker compose run --rm worker login`)."
+                    "Telegram account is not logged in. Run the one-time login on the server: "
+                    "docker compose run --rm app login"
                 )
             return await backfill(
                 client, factory, params["group"], since=since_dt, limit=params.get("limit")
             )
+        finally:
+            await client.disconnect()
 
     n = asyncio.run(run())
     return f"Fetched {n} messages from {params['group']}"

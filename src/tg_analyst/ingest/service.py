@@ -9,6 +9,7 @@ from telethon import TelegramClient, events
 from telethon.utils import get_peer_id
 
 from tg_analyst.ingest.convert import group_to_record, message_to_record, sender_to_record
+from tg_analyst.ingest.groupref import GroupRefError, candidate_ids, parse_group_ref
 from tg_analyst.storage import repository as repo
 from tg_analyst.storage.records import MessageRecord, UserRecord
 
@@ -37,8 +38,28 @@ def _persist(
     session.commit()
 
 
+async def _find_entity(client: TelegramClient, group: str):
+    ref = parse_group_ref(group)
+    ids = candidate_ids(ref)
+    if not ids:
+        return await client.get_entity(ref)
+    # Telethon resolves numeric ids only for chats it has seen; load the dialog list once
+    # if the first attempt fails.
+    for attempt in range(2):
+        for gid in ids:
+            try:
+                return await client.get_entity(gid)
+            except (ValueError, TypeError):
+                continue
+        if attempt == 0:
+            await client.get_dialogs()
+    raise GroupRefError(
+        f"Group {group!r} not found. Make sure the logged-in Telegram account is a member."
+    )
+
+
 async def resolve_group(client: TelegramClient, session_factory: sessionmaker, group: str):
-    entity = await client.get_entity(int(group) if group.lstrip("-").isdigit() else group)
+    entity = await _find_entity(client, group)
     group_id = get_peer_id(entity)
     with session_factory() as session:
         repo.upsert_group(session, group_to_record(entity, group_id))
