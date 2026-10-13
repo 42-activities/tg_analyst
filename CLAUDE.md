@@ -58,6 +58,7 @@ docker compose up -d db && docker compose run --rm app seed   # containerized st
 - `pipeline.yml` runs `ci.yml` (ruff, pytest on Python 3.12 + PostgreSQL 16, Docker smoke test), then `docker-deploy.yml`. **Every push to `main` deploys to production** (arm64 image → GHCR → SSH → `docker compose up`, with health check and rollback). Keep CI green: run `ruff check`, `ruff format --check` and `pytest` before committing.
 - `docker-deploy.yml` is a verbatim copy of `bakyt92/ci-templates`. Change it there first, then re-copy it.
 - Production is `~/projects/tg_analyst` on the arm64 server, served at https://tg-analyst.naurzalinov.me through host nginx with basic auth (`deploy/nginx/`). Never commit `.env` or credentials. The repo is **public**.
+- Production config comes from the `ENV_FILE` repository secret, which the deploy writes to the server's `.env`. Don't tell the user to edit `.env` on the server: the next deploy overwrites it. New settings go into `ENV_FILE` (and `.env.example`).
 - Use `repository._insert()` (PostgreSQL `INSERT ... ON CONFLICT`) for upserts, and chunk multi-row writes with `_chunks()`.
 - Develop analytics and dashboard features against `tg-analyst seed`. Its ground truth (helpers, the FeudA/FeudB pair, ignored newcomers who churn) is meant to be asserted in tests.
 - New dependencies go in `pyproject.toml`. Heavy ML dependencies belong in optional extras (e.g. `[hf]`), so the base Docker image stays slim.

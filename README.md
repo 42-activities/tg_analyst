@@ -146,7 +146,18 @@ pytest && ruff check .            # tests create and wipe a tg_analyst_test data
 
 Pull requests build the image but never push or deploy.
 
-The deploy needs these repository secrets: `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY` (its public half goes in `~/.ssh/authorized_keys` on the server) and `SSH_KNOWN_HOSTS`. The server's `.env` stays in place. The deploy also refuses to run if tracked files in the server checkout have uncommitted edits.
+The deploy needs these repository secrets:
+- `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY` (its public half goes in `~/.ssh/authorized_keys` on the server) and `SSH_KNOWN_HOSTS`
+- `ENV_FILE`: the complete production `.env` (Telegram credentials, `POSTGRES_PASSWORD`, `SENTIMENT_BACKEND`…). **GitHub owns the server's `.env`.** Every deploy overwrites it with this secret, so manual edits on the server are lost. To change config:
+  ```bash
+  gh secret set ENV_FILE < .env.production   # a local copy, never committed
+  gh workflow run pipeline.yml               # redeploy to apply it
+  ```
+  Keep `POSTGRES_PASSWORD` unchanged: the existing database user was created with it.
+
+The deploy refuses to run if tracked files in the server checkout have uncommitted edits.
+
+The Telegram login session is not configuration. It lives in the `tgdata` Docker volume, survives deploys, and is created once with `docker compose run --rm app login`.
 
 ### Production
 
