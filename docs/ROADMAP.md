@@ -9,7 +9,7 @@ Goal: real or synthetic Telegram data lands in a normalized database, and the in
 - [x] Package skeleton (`src/` layout, `pyproject.toml`, ruff, pytest)
 - [x] Settings from `.env` (`pydantic-settings`)
 - [x] Storage: SQLAlchemy 2.x models for `groups`, `users`, `messages`, `interactions` and `enrichment`
-- [x] Dialect-aware upserts (SQLite and PostgreSQL) so ingestion is idempotent
+- [x] PostgreSQL upserts (`ON CONFLICT`) so ingestion is idempotent
 - [x] Conversion from Telethon to plain records: text, reply headers, mentions, media type, service actions (join/leave)
 - [x] Back-fill with a resumable per-group high-water mark
 - [x] Live listener (`events.NewMessage`)
@@ -20,20 +20,29 @@ Goal: real or synthetic Telegram data lands in a normalized database, and the in
 ## M2 — Enrichment
 Goal: every message has a tone, an intent and a model version.
 
-- [ ] Text cleaning: URLs, emoji normalization, empty and sticker-only messages
-- [ ] Sentiment backend interface with a VADER implementation as the baseline
-- [ ] Multilingual HuggingFace backend (`cardiffnlp/twitter-xlm-roberta-base-sentiment`) as an optional extra
-- [ ] Intent heuristics: question, thanks, greeting, complaint
-- [ ] Toxicity score (Detoxify or a HuggingFace model, optional)
-- [ ] `tg-analyst enrich` that processes only rows missing or carrying a stale `model_version`
+- [x] Text cleaning: URL and mention placeholders, emoji kept, empty and sticker-only messages skipped
+- [x] Sentiment backend interface with a VADER implementation as the baseline (English only)
+- [x] Multilingual HuggingFace backend (`cardiffnlp/twitter-xlm-roberta-base-sentiment`), `hf` extra. Verified on RU, KK and EN.
+- [x] Intent heuristics (EN and RU): question, thanks, greeting, complaint
+- [ ] Toxicity score (Detoxify or a HuggingFace model, optional). Moved to M5.
+- [x] `tg-analyst enrich` that processes only rows missing or carrying a stale `model_version`
+
+## M2.5 — Web UI (pulled forward)
+- [x] DB-backed job queue (`jobs` table) and `tg-analyst worker`
+- [x] Jobs page: queue a back-fill by group name, enrichment, demo data, live job status
+- [x] Dashboard: KPIs, activity and tone timeline, heatmap, intent breakdown, members (tone given vs. received), top relationships with tense-pair alerts, message explorer, pseudonymization
+- [x] `tg-analyst login` (one-time interactive Telegram login for the worker)
+- [x] Docker Compose services `web` and `worker`
 
 ## M3 — Relationship analytics
 Goal: pure functions that turn the database into relationship metrics.
 
-- [ ] KPI layer: message velocity, DAU/WAU/MAU, media ratio, replies per message, median time to first reply
+- [x] Basic KPI layer: messages, active members, DAU, average tone, negative share, joins
+- [ ] More KPIs: WAU/MAU, media ratio, median time to first reply
 - [ ] Interaction graph (NetworkX): weighted by volume, edges carry average tone
 - [ ] Centrality (degree, betweenness), communities (Louvain), bridges and isolates
-- [ ] Directional sentiment: given vs. received per member, and tone between pairs over time
+- [x] Directional sentiment: given vs. received per member, and tone between pairs (aggregate)
+- [ ] Tone between pairs over time
 - [ ] Role classification: connector, helper, starter, lurker, critic, newcomer
 - [ ] Newcomer analytics: time and tone of the first reply, cohort retention, churn signals
 - [ ] Conflict detection: bursts of negative reply chains between the same pair

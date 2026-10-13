@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 from telethon import TelegramClient, events
@@ -17,6 +18,7 @@ BATCH_SIZE = 500
 
 
 def make_client(session_path: str, api_id: int, api_hash: str) -> TelegramClient:
+    Path(session_path).parent.mkdir(parents=True, exist_ok=True)
     # Telethon sleeps through FloodWaitError automatically below this threshold (seconds).
     return TelegramClient(session_path, api_id, api_hash, flood_sleep_threshold=24 * 3600)
 

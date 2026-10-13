@@ -1,6 +1,6 @@
 """Idempotent write operations and edge building.
 
-Upserts use the dialect's native ON CONFLICT so they work on SQLite and PostgreSQL.
+Upserts use PostgreSQL's native INSERT ... ON CONFLICT.
 """
 
 from collections.abc import Iterable, Sequence
@@ -8,13 +8,13 @@ from dataclasses import asdict
 from datetime import datetime
 
 from sqlalchemy import and_, case, func, select, update
-from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, aliased
 
-from tg_analyst.storage.models import Group, Interaction, Message, User
+from tg_analyst.storage.models import Enrichment, Group, Interaction, Message, User
 from tg_analyst.storage.records import GroupRecord, MessageRecord, UserRecord
 
-# Keeps multi-row statements under SQLite's bound-parameter limit.
+# Keeps multi-row statements well under PostgreSQL's 65,535 bound-parameter limit.
 _CHUNK_ROWS = 500
 
 
@@ -24,12 +24,7 @@ def _chunks(rows: list[dict]) -> Iterable[list[dict]]:
 
 
 def _insert(session: Session, model):
-    dialect = session.get_bind().dialect.name
-    if dialect == "sqlite":
-        return sqlite.insert(model)
-    if dialect == "postgresql":
-        return postgresql.insert(model)
-    raise NotImplementedError(f"Upserts not implemented for dialect {dialect!r}")
+    return pg_insert(model)
 
 
 def upsert_group(session: Session, record: GroupRecord) -> None:
@@ -202,3 +197,23 @@ def build_interactions(session: Session, group_id: int, min_message_id: int = 0)
         )
         inserted += len(session.execute(stmt).all())
     return inserted
+
+
+_ENRICHMENT_FIELDS = (
+    "sentiment_score",
+    "sentiment_label",
+    "toxicity",
+    "intent",
+    "topics",
+    "model_version",
+)
+
+
+def upsert_enrichment(session: Session, rows: list[dict]) -> None:
+    for chunk in _chunks(rows):
+        stmt = _insert(session, Enrichment).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[Enrichment.group_id, Enrichment.message_id],
+            set_={k: stmt.excluded[k] for k in _ENRICHMENT_FIELDS},
+        )
+        session.execute(stmt)

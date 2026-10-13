@@ -6,7 +6,7 @@ Telegram groups host tech communities, customer support and local and profession
 
 > **Focus:** the sentiment analysis here is about **user relationships and community dynamics**: member-to-member tone, how members treat newcomers, how admins and members interact, and whether conflict is rising. It does not measure market or crypto sentiment.
 
-> **Status:** Milestone 1 (ingestion and storage) is done. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status:** ingestion, enrichment and a first web UI work. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -25,14 +25,14 @@ Telegram groups host tech communities, customer support and local and profession
 ```
 ┌──────────────┐   ┌──────────────┐   ┌──────────────────┐   ┌──────────────────┐
 │  Ingestion   │──▶│   Storage    │──▶│  NLP & Enrichment│──▶│  Presentation    │
-│  (Telethon)  │   │ (SQLite→PG)  │   │ sentiment, graph │   │ Streamlit+Plotly │
+│  (Telethon)  │   │ (PostgreSQL) │   │ sentiment, graph │   │ Streamlit+Plotly │
 └──────────────┘   └──────────────┘   └──────────────────┘   └──────────────────┘
 ```
 
 | Layer | Component | Responsibility |
 |---|---|---|
 | 1. Ingestion | Telethon (MTProto) | Back-fills history, streams new messages, captures reply/mention/reaction edges and handles `FloodWaitError` rate limits. |
-| 2. Storage | SQLite (default), PostgreSQL (scale) | Normalized tables for messages, users and interactions, plus enrichment results. |
+| 2. Storage | PostgreSQL 16 | Normalized tables for messages, users and interactions, plus enrichment results. |
 | 3. Enrichment | VADER, HuggingFace (multilingual), optional LLM API | Cleans text, scores polarity (-1.0 to +1.0), flags toxicity, detects intent (question, thanks, complaint, greeting), extracts topics and builds the interaction graph (NetworkX). |
 | 4. Presentation | Streamlit + Plotly | KPI cards, relationship network, sentiment timelines, heatmaps and the message explorer. |
 
@@ -90,44 +90,52 @@ A filterable table by keyword, date range, user, interaction pair, sentiment and
 
 ## Getting started
 
-Development plan: [`docs/ROADMAP.md`](docs/ROADMAP.md). **Milestone 1** is implemented: storage, ingestion, the synthetic data generator, Docker and CI/CD. Enrichment, analytics and the dashboard come next.
+Development plan: [`docs/ROADMAP.md`](docs/ROADMAP.md). Done so far: ingestion and storage (M1), sentiment and intent enrichment (M2), and a web UI with a job queue and dashboards.
 
 ### Prerequisites
-- Docker with Compose v2, **or** Python 3.11+
-- Telegram API credentials (`api_id`, `api_hash`) from <https://my.telegram.org>. Not needed for synthetic data.
+- Docker with Compose v2 (Python 3.12+ too, if you run outside Docker)
+- Telegram API credentials (`api_id`, `api_hash`) from <https://my.telegram.org>. Not needed for demo data.
 - A Telegram account that is a member of the groups you want to analyze
 
 ### Run with Docker (recommended)
 
 ```bash
 cp .env.example .env                      # fill in TG_API_ID, TG_API_HASH, TG_PHONE
-docker compose up -d db                   # PostgreSQL 16 (POSTGRES_PORT to change host port)
-docker compose run --rm app seed          # load a synthetic community, no Telegram needed
-docker compose run --rm app backfill --group <username_or_id> --since 2026-01-01
-TG_GROUP=<username_or_id> docker compose --profile live up -d listener
+docker compose run --rm app login         # once: enter the code Telegram sends you
+docker compose up -d                      # PostgreSQL + web UI + worker
 ```
 
-The first `backfill` asks for the Telegram login code interactively. The resulting session file is stored in the `tgdata` volume.
+Open <http://localhost:8501>. On the **Jobs** page, enter a group (`@name`, `t.me/name` or an id) and click *Queue back-fill*. The worker fetches the history and runs sentiment analysis, and the results show up on the **Dashboard**. *Load demo data* gives you a synthetic community to explore without Telegram.
+
+- **Remote server:** the UI has no login and listens on 127.0.0.1 only. Use an SSH tunnel: `ssh -L 8501:localhost:8501 <server>`.
+- **Multilingual chats (RU/KK…):** set `SENTIMENT_BACKEND=hf` in `.env` and build with `docker compose build --build-arg EXTRAS=web,hf`. VADER, the default, understands English only.
+- **Live updates:** `TG_GROUP=<group> docker compose --profile live up -d listener`. Don't run it while a back-fill job is running, because both share one Telegram session.
+- **Ports in use:** set `WEB_PORT` / `POSTGRES_PORT`.
 
 ### Run locally
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"                   # add ,postgres for PostgreSQL
-cp .env.example .env                      # defaults to SQLite at data/tg_analyst.db
+pip install -e ".[dev,web]"               # add ,hf for the multilingual model
+cp .env.example .env                      # points at the Compose PostgreSQL on localhost:5432
+docker compose up -d db                   # the only database supported
 
-tg-analyst seed                           # synthetic community (48 users, ~4k messages)
-tg-analyst backfill --group <g> [--since 2026-01-01] [--limit N]   # resumable
-tg-analyst listen --group <g>             # stream new messages
-tg-analyst build-edges                    # re-derive reply/mention interactions
-pytest && ruff check .
+tg-analyst login                          # once
+tg-analyst web & tg-analyst worker        # UI on http://localhost:8501
+
+# or drive everything from the CLI:
+tg-analyst seed                           # synthetic community
+tg-analyst backfill --group <g> [--since 2026-01-01] [--limit N]
+tg-analyst enrich [--backend vader|hf]    # sentiment + intent for new messages
+tg-analyst listen --group <g>
+pytest && ruff check .            # tests create and wipe a tg_analyst_test database
 ```
 
 ### CI/CD
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request:
 1. **lint:** `ruff check` and `ruff format --check`
-2. **test:** pytest on Python 3.11 and 3.12 × SQLite and PostgreSQL
+2. **test:** pytest on Python 3.12 against a PostgreSQL 16 service container
 3. **docker:** builds the image and smoke-tests it with `seed`. On `main` and `v*` tags it then pushes to `ghcr.io/42-activities/tg_analyst` with tags `latest`, `main`, `sha-<short>` and semver.
 
 ---
@@ -142,10 +150,11 @@ tg_analyst/
 │   ├── synthetic.py       # deterministic synthetic community
 │   ├── ingest/            # Telethon → records conversion, backfill, live listener
 │   ├── storage/           # SQLAlchemy models, upserts, interaction-edge builder
-│   ├── enrich/            # (M2) cleaning, sentiment, toxicity, intent, topics
-│   ├── graph/             # (M3) interaction graph, centrality, communities, roles
-│   ├── analytics/         # (M3) KPI and metric computations (pure functions)
-│   └── dashboard/         # (M4) Streamlit app and pages
+│   ├── jobs.py            # DB-backed job queue + worker
+│   ├── enrich/            # cleaning, sentiment backends (VADER / HF), intent
+│   ├── analytics/         # loaders + pure metric functions
+│   ├── dashboard/         # Streamlit app: pages/dashboard.py, pages/jobs.py
+│   └── graph/             # (M3) centrality, communities, roles
 ├── tests/
 ├── docs/ROADMAP.md
 ├── Dockerfile, docker-compose.yml

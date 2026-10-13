@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## Project summary
 
-TG Analyst is a Telegram community intelligence platform with four stages: **ingest** (Telethon) → **store** (SQLite, later PostgreSQL) → **enrich** (sentiment, intent, interaction graph) → **visualize** (Streamlit + Plotly). See `README.md` for the full design.
+TG Analyst is a Telegram community intelligence platform with four stages: **ingest** (Telethon) → **store** (PostgreSQL) → **enrich** (sentiment, intent, interaction graph) → **visualize** (Streamlit + Plotly). See `README.md` for the full design.
 
 **Domain focus:** the analysis is about **user relationships and community dynamics**: who interacts with whom, the tone between members, how newcomers are treated, member roles, conflict and churn. It is **not** a crypto, market or ticker sentiment tool. Do not add finance-specific features (tickers, price correlation, hype tracking) unless asked.
 
@@ -12,9 +12,9 @@ Milestone 1 (storage and ingestion) is implemented. If a module from the planned
 
 ## Tech stack
 
-- Python 3.11+ with a `src/` layout. The package is `tg_analyst`.
+- Python 3.12+ with a `src/` layout. The package is `tg_analyst`.
 - **Telethon** for the MTProto client. It is async-first.
-- **SQLAlchemy 2.x** with SQLite by default. Keep the code portable to PostgreSQL: no SQLite-only SQL.
+- **SQLAlchemy 2.x** on **PostgreSQL only** (psycopg 3). SQLite was deliberately dropped, so PostgreSQL features (`ON CONFLICT`, advisory locks, JSON) are fine to use.
 - **pandas** for analytics and **NetworkX** for the interaction graph.
 - **VADER** as the fast English baseline. For non-English or mixed chats (common in Telegram), use a multilingual **HuggingFace** model such as `cardiffnlp/twitter-xlm-roberta-base-sentiment`. An LLM API is an optional, pluggable backend.
 - **Streamlit + Plotly** for the dashboard.
@@ -38,28 +38,33 @@ data/            # local DB and *.session files; git-ignored
 ## Commands
 
 ```bash
-pip install -e ".[dev,postgres]"               # install
-pytest                                         # tests on SQLite
-TEST_DATABASE_URL=postgresql+psycopg://... pytest   # tests on PostgreSQL (CI runs both)
+pip install -e ".[dev,web]"                     # install (add ,hf for the multilingual model)
+docker compose up -d db                        # PostgreSQL for dev and tests
+pytest                                         # uses/creates tg_analyst_test (override: TEST_DATABASE_URL)
 ruff check . && ruff format .                  # lint + format
 tg-analyst seed                                # synthetic community, no Telegram needed
 tg-analyst backfill --group <g> [--since DATE] # resumable history fetch
 tg-analyst listen --group <g>                  # live stream
 tg-analyst build-edges                         # re-derive interactions
+tg-analyst enrich [--backend vader|hf]         # sentiment + intent
+tg-analyst login                               # one-time Telegram login (interactive)
+tg-analyst web / tg-analyst worker             # Streamlit UI / job runner
 docker compose up -d db && docker compose run --rm app seed   # containerized stack
 ```
 
 ## Workflow
 
 - Plan and progress are tracked in `docs/ROADMAP.md`. Tick items off as they land.
-- CI (`.github/workflows/ci.yml`) runs ruff and pytest on SQLite and PostgreSQL, then builds and smoke-tests the Docker image. It pushes to GHCR on `main` and `v*` tags. Keep it green: run `ruff check`, `ruff format --check` and `pytest` before committing.
-- Any new SQL must pass on both SQLite and PostgreSQL. Use `repository._insert()` for upserts.
+- CI (`.github/workflows/ci.yml`) runs ruff and pytest (Python 3.12, PostgreSQL 16), then builds and smoke-tests the Docker image. It pushes to GHCR on `main` and `v*` tags. Keep it green: run `ruff check`, `ruff format --check` and `pytest` before committing.
+- Use `repository._insert()` (PostgreSQL `INSERT ... ON CONFLICT`) for upserts, and chunk multi-row writes with `_chunks()`.
 - Develop analytics and dashboard features against `tg-analyst seed`. Its ground truth (helpers, the FeudA/FeudB pair, ignored newcomers who churn) is meant to be asserted in tests.
 - New dependencies go in `pyproject.toml`. Heavy ML dependencies belong in optional extras (e.g. `[hf]`), so the base Docker image stays slim.
 
 ## Architecture rules
 
-- **Keep the layers separate.** The dashboard reads from storage and `analytics/` only. It never calls Telethon or runs model inference. Enrichment is a separate batch step that writes its results back to the database.
+- **Keep the layers separate.** The dashboard reads from storage and `analytics/` only. It never calls Telethon or runs model inference. Work the UI triggers goes through the `jobs` table and is executed by `tg-analyst worker` (`jobs.RUNNERS`). Enrichment is a separate batch step that writes its results back to the database.
+- **Streamlit pages** live in `dashboard/pages/*.py`, with shared cached resources in `dashboard/common.py`. `tests/test_web.py` smoke-tests them headlessly with `AppTest`.
+- `init_db` must stay safe when several processes call it at once: it takes a PostgreSQL advisory lock.
 - **The interaction edge is the core unit.** Replies, mentions, reactions and forwards each become a row in `interactions` (`source_user_id → target_user_id`). Relationship metrics such as pair sentiment, centrality and roles derive from these edges joined with message sentiment, so keep edge extraction correct and complete.
 - **Sentiment is directional.** Store a message's sentiment once, then attribute it to the edge. "Sentiment given" (as sender) and "sentiment received" (as target) are different metrics, so don't conflate them.
 - **Ingestion must be idempotent.** Upsert on `(group_id, message_id)`. Track a per-group high-water mark (`last_message_id`) so back-fills can resume and incremental runs stay cheap.

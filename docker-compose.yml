@@ -1,11 +1,31 @@
-# Local stack: PostgreSQL + the tg-analyst CLI.
+# Local stack: PostgreSQL, web UI, job worker and the tg-analyst CLI.
 #
-#   docker compose up -d db
-#   docker compose run --rm app seed                      # synthetic data
-#   docker compose run --rm app backfill --group <name>   # first run prompts for the login code
+#   docker compose run --rm app login                     # once: Telegram login code prompt
+#   docker compose up -d                                  # db + web (http://localhost:8501) + worker
+#   docker compose run --rm app seed                      # optional synthetic demo data
 #   docker compose --profile live up -d listener          # stream new messages
 #
+# The web UI has no authentication: it is bound to 127.0.0.1 only. Reach it remotely
+# through an SSH tunnel (ssh -L 8501:localhost:8501 server) rather than exposing it.
+#
 # Telegram credentials come from .env (see .env.example).
+
+x-app: &app
+  build: .
+  image: tg-analyst:local
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql+psycopg://tg_analyst:${POSTGRES_PASSWORD:-tg_analyst}@db:5432/tg_analyst
+  volumes:
+    # Holds the Telethon *.session file: it grants full account access.
+    - tgdata:/app/data
+  depends_on:
+    db:
+      condition: service_healthy
+  stdin_open: true
+  tty: true
 
 services:
   db:
@@ -24,22 +44,26 @@ services:
       timeout: 3s
       retries: 10
 
-  app: &app
-    build: .
-    image: tg-analyst:local
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      DATABASE_URL: postgresql+psycopg://tg_analyst:${POSTGRES_PASSWORD:-tg_analyst}@db:5432/tg_analyst
-    volumes:
-      # Holds the Telethon *.session file: it grants full account access.
-      - tgdata:/app/data
-    depends_on:
-      db:
-        condition: service_healthy
-    stdin_open: true
-    tty: true
+  # One-off CLI: docker compose run --rm app <command>
+  app:
+    <<: *app
+    profiles: ["cli"]
+
+  web:
+    <<: *app
+    command: ["web", "--host", "0.0.0.0", "--port", "8501"]
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8501}:8501"
+    stdin_open: false
+    tty: false
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    command: ["worker"]
+    stdin_open: false
+    tty: false
+    restart: unless-stopped
 
   listener:
     <<: *app

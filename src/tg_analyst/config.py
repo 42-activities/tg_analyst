@@ -14,7 +14,11 @@ class Settings(BaseSettings):
     tg_phone: str | None = None
     tg_session_path: str = "data/tg_analyst"
 
-    database_url: str = "sqlite:///data/tg_analyst.db"
+    database_url: str = "postgresql+psycopg://tg_analyst:tg_analyst@localhost:5432/tg_analyst"
+
+    # "vader" (English, fast, default) or "hf" (multilingual transformer; needs the hf extra).
+    sentiment_backend: str = "vader"
+    hf_sentiment_model: str = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
 
     def require_telegram(self) -> tuple[int, str]:
         """Return (api_id, api_hash) or raise if credentials are missing."""

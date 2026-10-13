@@ -1,35 +1,29 @@
 """Engine and session helpers."""
 
-from pathlib import Path
-
-from sqlalchemy import Engine, create_engine, event
-from sqlalchemy.engine import make_url
+from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from tg_analyst.storage.models import Base
 
 
 def make_engine(url: str) -> Engine:
-    parsed = make_url(url)
-    if parsed.get_backend_name() == "sqlite" and parsed.database not in (None, "", ":memory:"):
-        Path(parsed.database).parent.mkdir(parents=True, exist_ok=True)
-
-    engine = create_engine(url)
-
-    if engine.dialect.name == "sqlite":
-
-        @event.listens_for(engine, "connect")
-        def _sqlite_pragmas(dbapi_conn, _record):
-            cur = dbapi_conn.cursor()
-            cur.execute("PRAGMA foreign_keys=ON")
-            cur.execute("PRAGMA journal_mode=WAL")
-            cur.close()
-
+    """Create an engine for a PostgreSQL URL (``postgresql+psycopg://...``)."""
+    engine = create_engine(url, pool_pre_ping=True)
+    if engine.dialect.name != "postgresql":
+        raise ValueError(f"Only PostgreSQL is supported, got {engine.dialect.name!r}")
     return engine
 
 
+# Arbitrary constant identifying the schema-creation advisory lock.
+_SCHEMA_LOCK_ID = 724_461_001
+
+
 def init_db(engine: Engine) -> None:
-    Base.metadata.create_all(engine)
+    """Create missing tables. Safe when several processes start at once (web, worker...)."""
+    with engine.begin() as conn:
+        # Without this, concurrent CREATE TABLEs race on PostgreSQL's catalog.
+        conn.execute(text("SELECT pg_advisory_xact_lock(:id)"), {"id": _SCHEMA_LOCK_ID})
+        Base.metadata.create_all(conn)
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:

@@ -88,6 +88,67 @@ def cmd_build_edges(args) -> None:
         session.commit()
 
 
+def cmd_enrich(args) -> None:
+    from tg_analyst.enrich.pipeline import enrich
+    from tg_analyst.enrich.sentiment import get_backend
+
+    settings = get_settings()
+    name = args.backend or settings.sentiment_backend
+    kwargs = {"model": settings.hf_sentiment_model} if name == "hf" else {}
+    backend = get_backend(name, **kwargs)
+    with _session_factory()() as session:
+        stats = enrich(
+            session, backend, group_id=args.group_id, batch_size=args.batch_size, force=args.force
+        )
+    log.info("Enrichment done: %d scored, %d without text", stats.scored, stats.skipped)
+
+
+def cmd_login(_args) -> None:
+    client = _client()
+
+    async def run():
+        async with client:
+            await client.start(phone=get_settings().tg_phone)
+            me = await client.get_me()
+            log.info("Logged in as %s (id %s); session saved", me.username or me.first_name, me.id)
+
+    asyncio.run(run())
+
+
+def cmd_worker(args) -> None:
+    from tg_analyst.jobs import work_forever
+
+    work_forever(_session_factory(), poll_seconds=args.poll)
+
+
+def cmd_web(args) -> None:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import tg_analyst.dashboard
+
+    app = Path(tg_analyst.dashboard.__file__).with_name("app.py")
+    cmd = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(app),
+        "--server.address",
+        args.host,
+        "--server.port",
+        str(args.port),
+        "--server.headless",
+        "true",
+        "--browser.gatherUsageStats",
+        "false",
+        "--client.toolbarMode",
+        "minimal",
+    ]
+    raise SystemExit(subprocess.call(cmd))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tg-analyst", description=__doc__)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -113,6 +174,26 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("build-edges", help="(re)derive reply and mention interactions")
     p.add_argument("--group-id", type=int, action="append")
     p.set_defaults(func=cmd_build_edges)
+
+    sub.add_parser("login", help="log in to Telegram once (interactive)").set_defaults(
+        func=cmd_login
+    )
+
+    p = sub.add_parser("worker", help="run queued jobs from the web UI")
+    p.add_argument("--poll", type=float, default=2.0, help="seconds between queue checks")
+    p.set_defaults(func=cmd_worker)
+
+    p = sub.add_parser("web", help="start the web UI (Streamlit)")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8501)
+    p.set_defaults(func=cmd_web)
+
+    p = sub.add_parser("enrich", help="score sentiment and intent for new/stale messages")
+    p.add_argument("--backend", choices=["vader", "hf"], help="default: SENTIMENT_BACKEND")
+    p.add_argument("--group-id", type=int)
+    p.add_argument("--batch-size", type=int, default=256)
+    p.add_argument("--force", action="store_true", help="re-score everything")
+    p.set_defaults(func=cmd_enrich)
 
     return parser
 

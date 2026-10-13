@@ -7,16 +7,26 @@ name = "tg-analyst"
 version = "0.1.0"
 description = "Telegram community intelligence: relationships, tone and community health."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "telethon>=1.36",
     "sqlalchemy>=2.0",
     "pydantic-settings>=2.2",
+    "vaderSentiment>=3.3.2",
+    "psycopg[binary]>=3.1",
 ]
 
 [project.optional-dependencies]
-postgres = [
-    "psycopg[binary]>=3.1",
+web = [
+    "streamlit>=1.40",
+    "plotly>=5.20",
+    "pandas>=2.1",
+]
+hf = [
+    "transformers>=4.40",
+    "torch>=2.2",
+    "sentencepiece>=0.2",
+    "protobuf>=4",
 ]
 dev = [
     "pytest>=8",
@@ -36,7 +46,7 @@ asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
