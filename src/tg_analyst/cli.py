@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
 
@@ -23,6 +24,19 @@ def _client():
     settings = get_settings()
     api_id, api_hash = settings.require_telegram()
     return make_client(settings.tg_session_path, api_id, api_hash)
+
+
+@contextlib.asynccontextmanager
+async def _started(client):
+    """Log in (prompting only if needed) and always disconnect.
+
+    Not `async with client`: that runs client.start() with no phone and prompts for it.
+    """
+    await client.start(phone=get_settings().tg_phone)
+    try:
+        yield client
+    finally:
+        await client.disconnect()
 
 
 def cmd_init_db(_args) -> None:
@@ -52,8 +66,7 @@ def cmd_backfill(args) -> None:
     client = _client()
 
     async def run():
-        async with client:
-            await client.start(phone=get_settings().tg_phone)
+        async with _started(client):
             for group in args.group:
                 await backfill(client, factory, group, since=since, limit=args.limit)
 
@@ -67,8 +80,7 @@ def cmd_listen(args) -> None:
     client = _client()
 
     async def run():
-        async with client:
-            await client.start(phone=get_settings().tg_phone)
+        async with _started(client):
             await listen(client, factory, args.group)
 
     asyncio.run(run())
@@ -107,8 +119,7 @@ def cmd_login(_args) -> None:
     client = _client()
 
     async def run():
-        async with client:
-            await client.start(phone=get_settings().tg_phone)
+        async with _started(client):
             me = await client.get_me()
             log.info("Logged in as %s (id %s); session saved", me.username or me.first_name, me.id)
 
