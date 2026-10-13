@@ -39,21 +39,22 @@ Goal: every message has a tone, an intent and a model version.
 Goal: pure functions that turn the database into relationship metrics.
 
 - [x] Basic KPI layer: messages, active members, DAU, average tone, negative share, joins
-- [ ] More KPIs: WAU/MAU, media ratio, median time to first reply
-- [ ] Interaction graph (NetworkX): weighted by volume, edges carry average tone
-- [ ] Centrality (degree, betweenness), communities (Louvain), bridges and isolates
+- [x] More KPIs: weekly active members, media share, median time to first reply
+- [x] Interaction graph (NetworkX): weighted by volume, edges carry average tone
+- [x] Centrality (degree, betweenness), communities (Louvain), bridges and isolates
 - [x] Directional sentiment: given vs. received per member, and tone between pairs (aggregate)
-- [ ] Tone between pairs over time
-- [ ] Role classification: connector, helper, starter, lurker, critic, newcomer
-- [ ] Newcomer analytics: time and tone of the first reply, cohort retention, churn signals
-- [ ] Conflict detection: bursts of negative reply chains between the same pair
+- [x] Tone between pairs over time (weekly)
+- [x] Role classification: connector, helper, starter, lurker, critic, newcomer (relative thresholds; matches synthetic ground truth)
+- [x] Newcomer analytics: whether/when/how warmly the first message was answered, 14-day retention split by welcome
+- [x] Conflict detection: bursts of hostile exchanges per pair, mutual (feud) vs one-sided
 
 ## M4 — Dashboard
 Goal: a Streamlit app over M3.
 
-- [ ] Global filters: group, date range, user, keyword
-- [ ] Pages: Overview (KPIs), Network, Members, Mood, Newcomers, Heatmaps, Explorer
-- [ ] Pseudonymization toggle for screenshots and sharing
+- [x] Global filters: group, date range (defaults to the group's data); keyword/tone/type in the explorer
+- [ ] Per-user drill-down page
+- [x] Tabs: Activity & mood, Members (with roles), Network, Relationships (with conflicts and pair timelines), Newcomers, Messages
+- [x] Pseudonymization toggle for screenshots and sharing
 
 ## M5 — Hardening and scale
 - [ ] Alembic migrations (replacing `create_all`)

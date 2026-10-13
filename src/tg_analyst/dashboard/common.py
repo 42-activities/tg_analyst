@@ -39,6 +39,19 @@ def cached_edges(group_id: int, start: datetime, end: datetime) -> pd.DataFrame:
     return load.interactions(engine(), group_id, start, end)
 
 
+def fmt_duration(seconds) -> str:
+    """Human-friendly duration: 45 s, 12 min, 3.5 h, 2.0 d."""
+    if seconds is None or pd.isna(seconds):
+        return "–"
+    if seconds < 60:
+        return f"{seconds:.0f} s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f} min"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f} h"
+    return f"{seconds / 86400:.1f} d"
+
+
 def fmt(value, pattern="{:.2f}", none="–"):
     return none if value is None or pd.isna(value) else pattern.format(value)
 
@@ -56,3 +69,37 @@ def _tone_color(value) -> str:
 def tone_style(df: pd.DataFrame, columns: list[str]):
     """Colour tone values: red for hostile, green for friendly."""
     return df.style.map(_tone_color, subset=columns)
+
+
+@st.cache_data(ttl=300)
+def cached_date_range(group_id: int):
+    return load.date_range(engine(), group_id)
+
+
+@st.cache_data(ttl=300, show_spinner="Analysing relationships…")
+def cached_relationships(group_id: int, start: datetime, end: datetime) -> dict:
+    """Graph metrics, roles, newcomer outcomes and conflicts for a group and period."""
+    from tg_analyst.analytics import conflict, newcomers
+    from tg_analyst.graph import network, roles
+
+    msgs = cached_messages(group_id, start, end)
+    edges = cached_edges(group_id, start, end)
+    graph = network.build_graph(edges)
+    centrality = network.centrality(graph)
+    feats = roles.member_features(msgs, centrality)
+    member_roles = (
+        roles.classify_roles(feats, msgs["timestamp"].max())
+        if not feats.empty
+        else pd.Series(dtype=object)
+    )
+    outcomes = newcomers.newcomer_outcomes(msgs)
+    return {
+        "graph": graph,
+        "centrality": centrality,
+        "communities": network.communities(graph),
+        "roles": member_roles,
+        "newcomers": outcomes,
+        "newcomer_summary": newcomers.newcomer_summary(outcomes),
+        "conflicts": conflict.detect_conflicts(edges),
+        "pair_timeline": conflict.pair_tone_timeline(edges),
+    }

@@ -3,7 +3,7 @@
 from datetime import datetime
 
 import pandas as pd
-from sqlalchemy import Engine, and_, select
+from sqlalchemy import Engine, and_, func, select
 
 from tg_analyst.storage.models import Enrichment, Group, Interaction, Message, User
 
@@ -74,3 +74,13 @@ def interactions(engine: Engine, group_id: int, start: datetime, end: datetime) 
         )
     )
     return pd.read_sql(stmt, engine, parse_dates=["timestamp"])
+
+
+def date_range(engine: Engine, group_id: int) -> tuple[datetime | None, datetime | None]:
+    """First and last message timestamp of a group (None, None if it has no messages)."""
+    stmt = select(func.min(Message.timestamp), func.max(Message.timestamp)).where(
+        Message.group_id == group_id
+    )
+    with engine.connect() as conn:
+        first, last = conn.execute(stmt).one()
+    return first, last

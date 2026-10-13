@@ -8,7 +8,7 @@ TG Analyst is a Telegram community intelligence platform with four stages: **ing
 
 **Domain focus:** the analysis is about **user relationships and community dynamics**: who interacts with whom, the tone between members, how newcomers are treated, member roles, conflict and churn. It is **not** a crypto, market or ticker sentiment tool. Do not add finance-specific features (tickers, price correlation, hype tracking) unless asked.
 
-Milestone 1 (storage and ingestion) is implemented. If a module from the planned layout doesn't exist yet, create it where the layout below puts it.
+Milestones 1–3 (ingestion, enrichment, relationship analytics) and most of the M4 dashboard are implemented. If a module from the planned layout doesn't exist yet, create it where the layout below puts it.
 
 ## Tech stack
 

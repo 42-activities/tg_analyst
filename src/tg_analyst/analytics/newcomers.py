@@ -44,8 +44,9 @@ def newcomer_outcomes(
 ) -> pd.DataFrame:
     """One row per member who joined inside the data window.
 
-    - ``first_reply``: earliest reply by someone else to any of their messages
-    - ``welcomed``: that reply came within ``welcome_hours`` of their first message
+    - ``first_reply``: earliest reply by someone else to their *first* message, the
+      moment a newcomer introduces themselves or asks something
+    - ``welcomed``: that reply came within ``welcome_hours``
     - ``retained``: they wrote again ``retention_days`` or more after joining;
       NaN when the window ends too early to tell
     """
@@ -66,9 +67,14 @@ def newcomer_outcomes(
     rows = []
     for uid, joined_at in joined.items():
         own = human[(human["sender_id"] == uid) & (human["timestamp"] >= joined_at)]
-        first_msg = own["timestamp"].min() if not own.empty else pd.NaT
-        to_them = replies[replies["parent_author"] == uid].sort_values("timestamp")
-        first = to_them.iloc[0] if not to_them.empty else None
+        first_row = own.loc[own["timestamp"].idxmin()] if not own.empty else None
+        first_msg = first_row["timestamp"] if first_row is not None else pd.NaT
+        to_first = (
+            replies[replies["parent_id"] == first_row["message_id"]].sort_values("timestamp")
+            if first_row is not None
+            else replies.iloc[0:0]
+        )
+        first = to_first.iloc[0] if not to_first.empty else None
         first_reply = first["timestamp"] if first is not None else pd.NaT
         wait = (first_reply - first_msg).total_seconds() if first is not None else None
         retained = None

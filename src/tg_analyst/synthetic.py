@@ -175,6 +175,7 @@ def generate(days: int = 90, seed: int = 42, start: datetime | None = None) -> S
         )
 
     helpers = [p for p in personas if p.role in ("helper", "admin")]
+    unanswerable: set[int] = set()
     pending_newcomers = sorted(newcomers, key=lambda p: p.joined)
 
     for day in range(days):
@@ -204,8 +205,9 @@ def generate(days: int = 90, seed: int = 42, start: datetime | None = None) -> S
                     if rng.random() < 0.6:
                         emit(q.timestamp + timedelta(minutes=45), nc, POSITIVE[0], reply_to=q)
                 else:
-                    # Ignored newcomers go quiet within days.
+                    # Ignored newcomers go quiet within days, and nobody ever answers them.
                     nc.churn_after = nc.joined + timedelta(days=rng.uniform(1, 5))
+                    unanswerable.add(q.message_id)
 
             active = [
                 p
@@ -214,7 +216,11 @@ def generate(days: int = 90, seed: int = 42, start: datetime | None = None) -> S
             ]
             sender = rng.choices(active, [p.weight for p in active])[0]
             recent = [
-                m for m in messages[-30:] if not m.is_service and m.sender_id != sender.user.user_id
+                m
+                for m in messages[-30:]
+                if not m.is_service
+                and m.sender_id != sender.user.user_id
+                and m.message_id not in unanswerable
             ]
             target = rng.choice(recent) if recent and rng.random() < 0.55 else None
 
