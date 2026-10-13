@@ -22,8 +22,12 @@ def kpis(msgs: pd.DataFrame) -> dict[str, float | int | None]:
             "negative_share": None,
             "reply_share": None,
             "joins": 0,
+            "avg_wau": 0.0,
+            "media_share": None,
+            "median_first_reply_seconds": None,
         }
     daily_active = human.groupby(human["timestamp"].dt.date)["sender_id"].nunique()
+    weekly_active = human.groupby(human["timestamp"].dt.to_period("W"))["sender_id"].nunique()
     scored = human["sentiment_score"].dropna()
     labels = human["sentiment_label"].dropna()
     return {
@@ -36,7 +40,28 @@ def kpis(msgs: pd.DataFrame) -> dict[str, float | int | None]:
         else None,
         "reply_share": round(float(human["reply_to_msg_id"].notna().mean()), 3),
         "joins": int((msgs["service_action"] == "join").sum()),
+        "avg_wau": round(float(weekly_active.mean()), 1),
+        "media_share": round(float(human["has_media"].astype(bool).mean()), 3),
+        "median_first_reply_seconds": median_first_reply_seconds(human),
     }
+
+
+def median_first_reply_seconds(human: pd.DataFrame) -> float | None:
+    """Median wait between a message and the first reply to it from someone else.
+
+    Only messages that got a reply count; unanswered ones are excluded, not infinite.
+    """
+    replies = human[human["reply_to_msg_id"].notna()][["reply_to_msg_id", "sender_id", "timestamp"]]
+    parents = human[["message_id", "sender_id", "timestamp"]]
+    joined = replies.merge(
+        parents, left_on="reply_to_msg_id", right_on="message_id", suffixes=("", "_parent")
+    )
+    joined = joined[joined["sender_id"] != joined["sender_id_parent"]]
+    if joined.empty:
+        return None
+    first = joined.groupby("message_id")["timestamp"].min()
+    asked = joined.groupby("message_id")["timestamp_parent"].first()
+    return float((first - asked).dt.total_seconds().median())
 
 
 def daily_activity(msgs: pd.DataFrame, rolling_days: int = 7) -> pd.DataFrame:

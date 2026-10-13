@@ -10,6 +10,7 @@ from datetime import timedelta
 import pandas as pd
 
 from tg_analyst.analytics.metrics import human_messages
+from tg_analyst.analytics.newcomers import join_times
 
 ROLE_ORDER = ["newcomer", "lurker", "critic", "helper", "connector", "starter", "regular"]
 
@@ -67,14 +68,7 @@ def member_features(msgs: pd.DataFrame, centrality: pd.DataFrame) -> pd.DataFram
     feats["threads_started"] = started.groupby("sender_id").size()
 
     # Joins recorded by service messages count as the start of membership when earlier.
-    joins = msgs[msgs["service_action"] == "join"]
-    join_times = {}
-    for ts, ids, sender in zip(
-        joins["timestamp"], joins["action_user_ids"], joins["sender_id"], strict=False
-    ):
-        for uid in ids or ([sender] if pd.notna(sender) else []):
-            join_times[uid] = min(ts, join_times.get(uid, ts))
-    feats["joined"] = feats.index.map(join_times.get)
+    feats["joined"] = feats.index.map(join_times(msgs).get)
     feats["member_since"] = feats[["first_seen", "joined"]].min(axis=1)
 
     if not centrality.empty:
