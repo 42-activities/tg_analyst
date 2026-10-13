@@ -1,0 +1,54 @@
+# Local stack: PostgreSQL + the tg-analyst CLI.
+#
+#   docker compose up -d db
+#   docker compose run --rm app seed                      # synthetic data
+#   docker compose run --rm app backfill --group <name>   # first run prompts for the login code
+#   docker compose --profile live up -d listener          # stream new messages
+#
+# Telegram credentials come from .env (see .env.example).
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tg_analyst
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tg_analyst}
+      POSTGRES_DB: tg_analyst
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tg_analyst"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app: &app
+    build: .
+    image: tg-analyst:local
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://tg_analyst:${POSTGRES_PASSWORD:-tg_analyst}@db:5432/tg_analyst
+    volumes:
+      # Holds the Telethon *.session file: it grants full account access.
+      - tgdata:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+
+  listener:
+    <<: *app
+    profiles: ["live"]
+    command: ["listen", "--group", "${TG_GROUP:-}"]
+    stdin_open: false
+    tty: false
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  tgdata:

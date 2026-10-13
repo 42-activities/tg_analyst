@@ -6,7 +6,7 @@ Telegram groups host tech communities, customer support and local and profession
 
 > **Focus:** the sentiment analysis here is about **user relationships and community dynamics**: member-to-member tone, how members treat newcomers, how admins and members interact, and whether conflict is rising. It does not measure market or crypto sentiment.
 
-> **Status:** early stage. This document describes the target design.
+> **Status:** Milestone 1 (ingestion and storage) is done. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -88,56 +88,68 @@ A filterable table by keyword, date range, user, interaction pair, sentiment and
 
 ---
 
-## Getting started (planned)
+## Getting started
+
+Development plan: [`docs/ROADMAP.md`](docs/ROADMAP.md). **Milestone 1** is implemented: storage, ingestion, the synthetic data generator, Docker and CI/CD. Enrichment, analytics and the dashboard come next.
 
 ### Prerequisites
-- Python 3.11+
-- Telegram API credentials (`api_id`, `api_hash`) from <https://my.telegram.org>
+- Docker with Compose v2, **or** Python 3.11+
+- Telegram API credentials (`api_id`, `api_hash`) from <https://my.telegram.org>. Not needed for synthetic data.
 - A Telegram account that is a member of the groups you want to analyze
 
-### Setup
+### Run with Docker (recommended)
 
 ```bash
-git clone <repo-url> tg_analyst && cd tg_analyst
+cp .env.example .env                      # fill in TG_API_ID, TG_API_HASH, TG_PHONE
+docker compose up -d db                   # PostgreSQL 16 (POSTGRES_PORT to change host port)
+docker compose run --rm app seed          # load a synthetic community, no Telegram needed
+docker compose run --rm app backfill --group <username_or_id> --since 2026-01-01
+TG_GROUP=<username_or_id> docker compose --profile live up -d listener
+```
+
+The first `backfill` asks for the Telegram login code interactively. The resulting session file is stored in the `tgdata` volume.
+
+### Run locally
+
+```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-cp .env.example .env   # fill in TG_API_ID, TG_API_HASH, TG_PHONE
+pip install -e ".[dev]"                   # add ,postgres for PostgreSQL
+cp .env.example .env                      # defaults to SQLite at data/tg_analyst.db
+
+tg-analyst seed                           # synthetic community (48 users, ~4k messages)
+tg-analyst backfill --group <g> [--since 2026-01-01] [--limit N]   # resumable
+tg-analyst listen --group <g>             # stream new messages
+tg-analyst build-edges                    # re-derive reply/mention interactions
+pytest && ruff check .
 ```
 
-### Usage
+### CI/CD
 
-```bash
-# 1. Back-fill history for a group
-python -m tg_analyst.ingest backfill --group <username_or_id> --since 2025-01-01
-
-# 2. Stream new messages
-python -m tg_analyst.ingest listen --group <username_or_id>
-
-# 3. Run enrichment (sentiment, intent, interaction graph)
-python -m tg_analyst.enrich run
-
-# 4. Launch the dashboard
-streamlit run src/tg_analyst/dashboard/app.py
-```
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request:
+1. **lint:** `ruff check` and `ruff format --check`
+2. **test:** pytest on Python 3.11 and 3.12 × SQLite and PostgreSQL
+3. **docker:** builds the image and smoke-tests it with `seed`. On `main` and `v*` tags it then pushes to `ghcr.io/42-activities/tg_analyst` with tags `latest`, `main`, `sha-<short>` and semver.
 
 ---
 
-## Project structure (planned)
+## Project structure
 
 ```
 tg_analyst/
 ├── src/tg_analyst/
+│   ├── cli.py             # `tg-analyst` entry point
 │   ├── config.py          # settings loaded from .env
-│   ├── ingest/            # Telethon client, backfill, live listener
-│   ├── storage/           # SQLAlchemy models, repositories, migrations
-│   ├── enrich/            # cleaning, sentiment, toxicity, intent, topics
-│   ├── graph/             # interaction graph, centrality, communities, roles
-│   ├── analytics/         # KPI and metric computations (pure functions)
-│   └── dashboard/         # Streamlit app and pages
+│   ├── synthetic.py       # deterministic synthetic community
+│   ├── ingest/            # Telethon → records conversion, backfill, live listener
+│   ├── storage/           # SQLAlchemy models, upserts, interaction-edge builder
+│   ├── enrich/            # (M2) cleaning, sentiment, toxicity, intent, topics
+│   ├── graph/             # (M3) interaction graph, centrality, communities, roles
+│   ├── analytics/         # (M3) KPI and metric computations (pure functions)
+│   └── dashboard/         # (M4) Streamlit app and pages
 ├── tests/
-├── data/                  # local DB and session files (git-ignored)
-├── .env.example
-├── pyproject.toml
+├── docs/ROADMAP.md
+├── Dockerfile, docker-compose.yml
+├── .github/workflows/ci.yml
 ├── CLAUDE.md
 └── README.md
 ```

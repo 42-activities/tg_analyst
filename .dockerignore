@@ -1,0 +1,17 @@
+.git
+.github
+.venv
+venv
+data
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+*.session
+*.session-journal
+*.db
+*.sqlite
+.env
+.env.*
+tests
+docs

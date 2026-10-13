@@ -8,7 +8,7 @@ TG Analyst is a Telegram community intelligence platform with four stages: **ing
 
 **Domain focus:** the analysis is about **user relationships and community dynamics**: who interacts with whom, the tone between members, how newcomers are treated, member roles, conflict and churn. It is **not** a crypto, market or ticker sentiment tool. Do not add finance-specific features (tickers, price correlation, hype tracking) unless asked.
 
-The project is at an early stage. If a module described in the README doesn't exist yet, create it following the planned layout below.
+Milestone 1 (storage and ingestion) is implemented. If a module from the planned layout doesn't exist yet, create it where the layout below puts it.
 
 ## Tech stack
 
@@ -38,16 +38,24 @@ data/            # local DB and *.session files; git-ignored
 ## Commands
 
 ```bash
-pip install -e ".[dev]"                                    # install
-pytest                                                     # tests
-ruff check . && ruff format .                              # lint + format
-python -m tg_analyst.ingest backfill --group <g>           # back-fill history
-python -m tg_analyst.ingest listen --group <g>             # live stream
-python -m tg_analyst.enrich run                            # enrichment
-streamlit run src/tg_analyst/dashboard/app.py              # dashboard
+pip install -e ".[dev,postgres]"               # install
+pytest                                         # tests on SQLite
+TEST_DATABASE_URL=postgresql+psycopg://... pytest   # tests on PostgreSQL (CI runs both)
+ruff check . && ruff format .                  # lint + format
+tg-analyst seed                                # synthetic community, no Telegram needed
+tg-analyst backfill --group <g> [--since DATE] # resumable history fetch
+tg-analyst listen --group <g>                  # live stream
+tg-analyst build-edges                         # re-derive interactions
+docker compose up -d db && docker compose run --rm app seed   # containerized stack
 ```
 
-Update this section when the real entry points change.
+## Workflow
+
+- Plan and progress are tracked in `docs/ROADMAP.md`. Tick items off as they land.
+- CI (`.github/workflows/ci.yml`) runs ruff and pytest on SQLite and PostgreSQL, then builds and smoke-tests the Docker image. It pushes to GHCR on `main` and `v*` tags. Keep it green: run `ruff check`, `ruff format --check` and `pytest` before committing.
+- Any new SQL must pass on both SQLite and PostgreSQL. Use `repository._insert()` for upserts.
+- Develop analytics and dashboard features against `tg-analyst seed`. Its ground truth (helpers, the FeudA/FeudB pair, ignored newcomers who churn) is meant to be asserted in tests.
+- New dependencies go in `pyproject.toml`. Heavy ML dependencies belong in optional extras (e.g. `[hf]`), so the base Docker image stays slim.
 
 ## Architecture rules
 
