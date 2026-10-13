@@ -21,6 +21,7 @@ web = [
     "streamlit>=1.40",
     "plotly>=5.20",
     "pandas>=2.1",
+    "networkx>=3.2",
 ]
 hf = [
     "transformers>=4.40",
