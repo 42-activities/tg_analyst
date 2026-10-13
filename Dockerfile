@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 
 FROM python:3.12-slim AS build
-# Extras to install; use --build-arg EXTRAS=web,hf for the multilingual model.
-ARG EXTRAS=web
+# Extras to install. `hf` adds CPU-only torch + transformers for multilingual sentiment;
+# build with --build-arg EXTRAS=web for a slim image without it.
+ARG EXTRAS=web,hf
 WORKDIR /src
 # CPU-only torch wheels when the hf extra is requested (avoids ~4 GB of CUDA libraries).
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \

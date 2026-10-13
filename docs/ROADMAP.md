@@ -23,6 +23,7 @@ Goal: every message has a tone, an intent and a model version.
 - [x] Text cleaning: URL and mention placeholders, emoji kept, empty and sticker-only messages skipped
 - [x] Sentiment backend interface with a VADER implementation as the baseline (English only)
 - [x] Multilingual HuggingFace backend (`cardiffnlp/twitter-xlm-roberta-base-sentiment`), `hf` extra. Verified on RU, KK and EN.
+- [x] Production uses the small Russian model `cointegrated/rubert-tiny-sentiment-balanced`: 18× faster than XLM-R and 72% label agreement with it on real chat data. The image ships `hf` by default.
 - [x] Intent heuristics (EN and RU): question, thanks, greeting, complaint
 - [ ] Toxicity score (Detoxify or a HuggingFace model, optional). Moved to M5.
 - [x] `tg-analyst enrich` that processes only rows missing or carrying a stale `model_version`

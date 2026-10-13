@@ -108,7 +108,7 @@ docker compose up -d                      # PostgreSQL + web UI + worker
 Open <http://localhost:8501>. On the **Jobs** page, enter a group (`@name`, `t.me/name` or an id) and click *Queue back-fill*. The worker fetches the history and runs sentiment analysis, and the results show up on the **Dashboard**. *Load demo data* gives you a synthetic community to explore without Telegram.
 
 - **Remote server:** the UI has no login and listens on 127.0.0.1 only. Use an SSH tunnel: `ssh -L 8501:localhost:8501 <server>`.
-- **Multilingual chats (RU/KK…):** set `SENTIMENT_BACKEND=hf` in `.env` and build with `docker compose build --build-arg EXTRAS=web,hf`. VADER, the default, understands English only.
+- **Sentiment model:** the image includes CPU-only torch + transformers. Production uses `SENTIMENT_BACKEND=hf` with `cointegrated/rubert-tiny-sentiment-balanced`, a small Russian model (~70 msg/s on this server). For other languages, set `HF_SENTIMENT_MODEL=cardiffnlp/twitter-xlm-roberta-base-sentiment`, which is multilingual but ~18× slower and needs ~1.4 GB RAM. `vader` works for English only. Changing the model re-scores messages on the next enrichment run.
 - **Live updates:** `TG_GROUP=<group> docker compose --profile live up -d listener`. Don't run it while a back-fill job is running, because both share one Telegram session.
 - **Ports in use:** set `WEB_PORT` / `POSTGRES_PORT`.
 
