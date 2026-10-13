@@ -184,9 +184,9 @@ def test_conflict_chaining_and_threshold():
             ],
         }
     )
-    ep = conflict.detect_conflicts(edges, min_negative=3, gap_days=7)
+    ep = conflict.detect_conflicts(edges, negative_below=-0.3, min_negative=3, gap_days=7)
     assert len(ep) == 1 and ep.loc[0, "negative_interactions"] == 3 and ep.loc[0, "mutual"]
-    assert conflict.detect_conflicts(edges, min_negative=4).empty
+    assert conflict.detect_conflicts(edges, negative_below=-0.3, min_negative=4).empty
 
 
 def test_pair_tone_timeline(world):
@@ -207,3 +207,30 @@ def test_extended_kpis(world):
     assert 0 < k["avg_wau"] <= k["active_members"]
     assert 0 < k["media_share"] < 0.2
     assert k["median_first_reply_seconds"] > 0
+
+
+def test_hostility_threshold_adapts_to_the_group():
+    polite = pd.Series([0.5] * 95 + [-0.4] * 5)
+    rough = pd.Series([-0.9] * 20 + [-0.5] * 30 + [0.2] * 50)
+    assert conflict.hostility_threshold(polite) == -0.3  # never above the ceiling
+    assert conflict.hostility_threshold(rough) == -0.9
+    assert conflict.hostility_threshold(pd.Series(dtype=float)) == -0.3
+
+
+def test_banter_with_mostly_friendly_exchange_is_not_a_conflict():
+    t0 = pd.Timestamp("2026-01-01")
+    n = 20  # 3 hostile messages spread across 20 exchanges over a few days
+    tones = [0.4] * n
+    for k in (0, 9, 19):
+        tones[k] = -0.8
+    edges = pd.DataFrame(
+        {
+            "source_user_id": [1, 2] * (n // 2),
+            "target_user_id": [2, 1] * (n // 2),
+            "message_id": range(n),
+            "sentiment_score": tones,
+            "timestamp": [t0 + timedelta(hours=4 * i) for i in range(n)],
+        }
+    )
+    assert conflict.detect_conflicts(edges, negative_below=-0.3).empty
+    assert len(conflict.detect_conflicts(edges, negative_below=-0.3, min_hostile_share=0)) == 1
