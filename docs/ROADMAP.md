@@ -59,4 +59,6 @@ Goal: a Streamlit app over M3.
 - [ ] PostgreSQL deployment profile (docker-compose)
 - [ ] Reaction edges (`GetMessageReactionsList`, available only in some groups)
 - [ ] Topic extraction (keywords, then BERTopic)
-- [ ] Scheduled enrichment and a Docker image
+- [x] Docker image; arm64 auto-deploy on push to `main` with rollback
+- [x] Public URL with HTTPS and basic auth (https://tg-analyst.naurzalinov.me)
+- [ ] Scheduled enrichment

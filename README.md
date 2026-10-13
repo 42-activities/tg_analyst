@@ -133,10 +133,25 @@ pytest && ruff check .            # tests create and wipe a tg_analyst_test data
 
 ### CI/CD
 
-GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request:
-1. **lint:** `ruff check` and `ruff format --check`
-2. **test:** pytest on Python 3.12 against a PostgreSQL 16 service container
-3. **docker:** builds the image and smoke-tests it with `seed`. On `main` and `v*` tags it then pushes to `ghcr.io/42-activities/tg_analyst` with tags `latest`, `main`, `sha-<short>` and semver.
+`.github/workflows/pipeline.yml` runs on every pull request and every push to `main`:
+
+1. **CI** (`ci.yml`):
+   - `ruff`
+   - `pytest` on Python 3.12 against a PostgreSQL 16 service
+   - a Docker smoke test that builds the image and runs `seed` against PostgreSQL
+2. **Release** (`docker-deploy.yml`, a copy of the shared `bakyt92/ci-templates` workflow):
+   - **Build:** an **arm64** image goes to `ghcr.io/42-activities/tg_analyst-app:<commit sha>` (plus `latest`).
+   - **Deploy:** SSH to the server, check out the commit in `~/projects/tg_analyst`, pull the image, then `docker compose up -d --no-build`.
+   - **Health check and rollback:** it waits for `http://127.0.0.1:8501/_stcore/health`. If that fails, it rolls back to the previous commit and image.
+
+Pull requests build the image but never push or deploy.
+
+The deploy needs these repository secrets: `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY` (its public half goes in `~/.ssh/authorized_keys` on the server) and `SSH_KNOWN_HOSTS`. The server's `.env` stays in place. The deploy also refuses to run if tracked files in the server checkout have uncommitted edits.
+
+### Production
+
+- The site is <https://tg-analyst.naurzalinov.me>, behind host nginx with HTTP basic auth. See `deploy/nginx/`.
+- HTTPS certificates come from certbot.
 
 ---
 

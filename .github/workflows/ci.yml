@@ -1,21 +1,13 @@
-name: CI/CD
+name: CI
+
+# Lint, tests and a Docker smoke test. Called by pipeline.yml; the arm64 release image
+# is built and deployed by docker-deploy.yml.
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
-  workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  workflow_call:
 
 permissions:
   contents: read
-
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   lint:
@@ -56,11 +48,8 @@ jobs:
       - run: pytest -q
 
   docker:
-    needs: [lint, test]
+    name: docker smoke test
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     services:
       postgres:
         image: postgres:16-alpine
@@ -83,8 +72,8 @@ jobs:
           context: .
           load: true
           tags: tg-analyst:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=smoke
+          cache-to: type=gha,mode=max,scope=smoke
 
       - name: Smoke test
         run: |
@@ -92,35 +81,3 @@ jobs:
           docker run --rm --network host \
             -e DATABASE_URL=postgresql+psycopg://test:test@localhost:5432/test \
             tg-analyst:ci seed --days 7
-
-      # CD: publish to GitHub Container Registry on main and version tags.
-      - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Image metadata
-        if: github.event_name != 'pull_request'
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Push image
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha

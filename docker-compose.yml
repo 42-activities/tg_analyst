@@ -12,7 +12,8 @@
 
 x-app: &app
   build: .
-  image: tg-analyst:local
+  # CI builds and pushes this image; the server only pulls it (IMAGE_TAG = commit sha).
+  image: ghcr.io/42-activities/tg_analyst-app:${IMAGE_TAG:-latest}
   env_file:
     - path: .env
       required: false
