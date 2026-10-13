@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# TG Analyst: Telegram sessions grant full account access; local data
+*.session
+*.session-journal
+data/
+*.db
+*.sqlite
