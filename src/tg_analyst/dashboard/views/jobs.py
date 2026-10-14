@@ -144,9 +144,11 @@ def _sync_controls() -> None:
             "Re-check",
             ["Last 30 days", "Whole history"],
             horizontal=True,
-            help="Whole history makes one Telegram request per 100 stored messages",
+            help="Whole history makes one Telegram request per 100 stored messages, plus one "
+            "per message whose reactor list is incomplete. Run it once to import reactions "
+            "for messages stored before reactions were collected.",
         )
-        if st.form_submit_button("Check for edits and deletions now"):
+        if st.form_submit_button("Check for edits, deletions and reactions now"):
             with session_factory()() as s:
                 job = jobs.enqueue(
                     s,

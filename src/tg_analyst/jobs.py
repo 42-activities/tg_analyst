@@ -129,7 +129,7 @@ def _run_sync(factory: sessionmaker, params: dict) -> str:
     scope = "whole history" if days is None else f"last {days} days"
     return (
         f"Checked {stats['checked']} messages ({scope}): {stats['deleted']} deleted, "
-        f"{stats['edited']} edited"
+        f"{stats['edited']} edited, reactions updated on {stats['reactions_updated']}"
     )
 
 
