@@ -1,9 +1,11 @@
 """Engine and session helpers."""
 
-from sqlalchemy import Engine, create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
+from pathlib import Path
 
-from tg_analyst.storage.models import Base
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy.orm import Session, sessionmaker
 
 
 def make_engine(url: str) -> Engine:
@@ -18,12 +20,37 @@ def make_engine(url: str) -> Engine:
 _SCHEMA_LOCK_ID = 724_461_001
 
 
-def init_db(engine: Engine) -> None:
-    """Create missing tables. Safe when several processes start at once (web, worker...)."""
+# Revision matching the schema that existed before migrations were introduced.
+BASELINE_REVISION = "0001_baseline"
+
+
+def _alembic_config(conn) -> Config:
+    cfg = Config()
+    cfg.set_main_option("script_location", str(Path(__file__).with_name("migrations")))
+    cfg.attributes["connection"] = conn
+    return cfg
+
+
+def migrate(engine: Engine) -> None:
+    """Bring the schema to the latest Alembic revision.
+
+    Safe when several processes start at once (web, worker…): an advisory lock
+    serializes them. A database created before migrations existed (tables present, no
+    ``alembic_version``) is stamped at the baseline first, so nothing is recreated.
+    """
     with engine.begin() as conn:
-        # Without this, concurrent CREATE TABLEs race on PostgreSQL's catalog.
+        # Without this, concurrent DDL races on PostgreSQL's catalog.
         conn.execute(text("SELECT pg_advisory_xact_lock(:id)"), {"id": _SCHEMA_LOCK_ID})
-        Base.metadata.create_all(conn)
+        cfg = _alembic_config(conn)
+        tables = set(inspect(conn).get_table_names())
+        if "alembic_version" not in tables and "messages" in tables:
+            command.stamp(cfg, BASELINE_REVISION)
+        command.upgrade(cfg, "head")
+
+
+def init_db(engine: Engine) -> None:
+    """Create or upgrade the schema (alias of :func:`migrate`, kept for callers)."""
+    migrate(engine)
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:
