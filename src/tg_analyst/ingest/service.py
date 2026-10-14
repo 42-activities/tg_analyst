@@ -20,6 +20,7 @@ from tg_analyst.ingest.convert import (
     sender_to_record,
 )
 from tg_analyst.ingest.groupref import GroupRefError, candidate_ids, parse_group_ref
+from tg_analyst.progress import Progress, no_progress, ratio
 from tg_analyst.storage import repository as repo
 from tg_analyst.storage.records import MessageRecord, ReactionSummary, UserRecord
 
@@ -141,12 +142,23 @@ async def backfill(
     group: str,
     since: datetime | None = None,
     limit: int | None = None,
+    progress: Progress = no_progress,
 ) -> int:
-    """Fetch messages oldest-first, resuming after the stored high-water mark."""
+    """Fetch messages oldest-first, resuming after the stored high-water mark.
+
+    Progress is measured in message ids: from the first id fetched up to the group's newest
+    message at the start. Ids are not contiguous (deleted messages leave gaps), so it is an
+    estimate, but a steady one.
+    """
+    progress(None, "Finding the group")
     entity, group_id = await resolve_group(client, session_factory, group)
     with session_factory() as session:
         start_id = repo.get_high_water_mark(session, group_id)
-    log.info("Back-filling group %s from message id %s", group_id, start_id)
+    newest = await client.get_messages(entity, limit=1)
+    top_id = newest[0].id if newest else start_id
+    log.info("Back-filling group %s from message id %s to %s", group_id, start_id, top_id)
+    progress(0.0 if top_id > start_id else None, "Fetching messages")
+    first_id: int | None = None
 
     total = 0
     batch: list[tuple[MessageRecord, UserRecord | None]] = []
@@ -173,17 +185,24 @@ async def backfill(
         async for msg in client.iter_messages(entity, **kwargs):
             batch.append((message_to_record(msg, group_id), sender_to_record(msg.sender)))
             summaries.append(reactions_to_summary(msg))
+            if first_id is None:
+                first_id = msg.id
             if len(batch) >= BATCH_SIZE:
                 dropped, count = await flush()
                 skipped += dropped
                 total += count
                 log.info("Stored %d messages", total - skipped)
+                done = ratio(msg.id - first_id, top_id - first_id)
+                if limit:
+                    done = max(done or 0.0, total / limit)
+                progress(done, f"{total - skipped:,} messages stored, up to {msg.date:%Y-%m-%d}")
         if batch:
             dropped, count = await flush()
             skipped += dropped
             total += count
         if skipped:
             log.info("Skipped %d messages from excluded members", skipped)
+        progress(None, f"{total - skipped:,} messages stored; linking replies and mentions")
         edges = repo.build_interactions(session, group_id, min_message_id=start_id + 1)
         session.commit()
 
@@ -199,6 +218,7 @@ async def reconcile(
     session_factory: sessionmaker,
     group: str,
     days: int | None = 30,
+    progress: Progress = no_progress,
 ) -> dict[str, int]:
     """Re-check stored messages against Telegram: drop deleted ones, apply edits, and
     refresh reactions.
@@ -208,6 +228,7 @@ async def reconcile(
     empty message) for ids that no longer exist, which is how deletions are detected.
     Reactions are refreshed when a message's reaction total changed since the last check.
     """
+    progress(None, "Finding the group")
     entity, group_id = await resolve_group(client, session_factory, group)
     since = (
         datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days) if days is not None else None
@@ -244,6 +265,11 @@ async def reconcile(
             _store_reactions(session, group_id, changed, users, excluded)
         stats["checked"] += len(chunk)
         stats["reactions_updated"] += len(changed)
+        progress(
+            ratio(stats["checked"], len(ids)),
+            f"{stats['checked']:,} of {len(ids):,} messages checked: {stats['deleted']} deleted, "
+            f"{stats['edited']} edited, {stats['reactions_updated']} with new reactions",
+        )
     log.info("Reconciled group %s: %s", group_id, stats)
     return stats
 

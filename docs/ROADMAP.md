@@ -31,6 +31,7 @@ Goal: every message has a tone, an intent and a model version.
 ## M2.5 — Web UI (pulled forward)
 - [x] DB-backed job queue (`jobs` table) and `tg-analyst worker`
 - [x] Jobs page: queue a back-fill by group name, enrichment, demo data, live job status
+- [x] Job progress: running jobs report a fraction and detail (`jobs.progress_reporter`); the Jobs page shows a live bar, ETA and queue position
 - [x] Dashboard: KPIs, activity and tone timeline, heatmap, intent breakdown, members (tone given vs. received), top relationships with tense-pair alerts, message explorer, pseudonymization
 - [x] `tg-analyst login` (one-time interactive Telegram login for the worker)
 - [x] Docker Compose services `web` and `worker`

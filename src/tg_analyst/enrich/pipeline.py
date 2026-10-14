@@ -3,13 +3,14 @@
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from tg_analyst.enrich.clean import CLEAN_VERSION, clean_text, is_analyzable
 from tg_analyst.enrich.intent import INTENT_VERSION, detect_intent
 from tg_analyst.enrich.sentiment import SentimentBackend
 from tg_analyst.enrich.toxicity import ToxicityBackend
+from tg_analyst.progress import Progress, no_progress, ratio
 from tg_analyst.storage import repository as repo
 from tg_analyst.storage.models import Enrichment, Message
 
@@ -27,7 +28,7 @@ class EnrichStats:
     skipped: int = 0  # no analyzable text (stickers, media-only, links only)
 
 
-def _pending(session: Session, version: str, group_id: int | None, force: bool, limit: int):
+def _pending(version: str, group_id: int | None, force: bool, limit: int | None):
     stmt = (
         select(Message.group_id, Message.message_id, Message.text)
         .outerjoin(
@@ -54,6 +55,7 @@ def enrich(
     batch_size: int = 256,
     force: bool = False,
     toxicity: ToxicityBackend | None = None,
+    progress: Progress = no_progress,
 ) -> EnrichStats:
     """Score pending messages in batches, committing after each batch.
 
@@ -63,9 +65,13 @@ def enrich(
     version = model_version(backend, toxicity)
     stats = EnrichStats()
     after: tuple[int, int] | None = None
+    todo_total = session.scalar(
+        select(func.count()).select_from(_pending(version, group_id, force, None).subquery())
+    )
+    progress(0.0 if todo_total else 1.0, f"{todo_total:,} messages to score")
 
     while True:
-        stmt = _pending(session, version, group_id, force, batch_size)
+        stmt = _pending(version, group_id, force, batch_size)
         if after is not None:
             gid, mid = after
             stmt = stmt.where(
@@ -110,5 +116,7 @@ def enrich(
         stats.scored += len(todo)
         stats.skipped += len(rows) - len(todo)
         log.info("Enriched %d messages (%d without text)", stats.scored, stats.skipped)
+        done = stats.scored + stats.skipped
+        progress(ratio(done, todo_total), f"{done:,} of {todo_total:,} messages scored")
 
     return stats

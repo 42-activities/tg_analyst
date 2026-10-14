@@ -167,6 +167,8 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
     result: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
+    # Live progress while running: {"fraction": 0..1 or null, "detail": str, "updated": iso}.
+    progress: Mapped[dict | None] = mapped_column(JSON)
 
 
 class ExcludedUser(Base):

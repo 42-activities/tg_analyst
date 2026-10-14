@@ -23,7 +23,11 @@ from tg_analyst.storage.records import GroupRecord, MessageRecord
 # Tables introduced by revisions after 0001_baseline.
 LATER_TABLES = {"excluded_users", "reactions"}
 # Columns that later revisions added to baseline-era tables.
-LATER_COLUMNS = {"messages": ["reaction_count"], "enrichment": ["insult", "obscenity", "threat"]}
+LATER_COLUMNS = {
+    "messages": ["reaction_count"],
+    "enrichment": ["insult", "obscenity", "threat"],
+    "jobs": ["progress"],
+}
 
 
 @pytest.fixture

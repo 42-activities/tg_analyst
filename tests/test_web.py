@@ -1,18 +1,20 @@
 """Headless smoke tests of the Streamlit app (no browser needed)."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("streamlit")
+from sqlalchemy import update  # noqa: E402
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
-from tg_analyst import synthetic  # noqa: E402
+from tg_analyst import jobs, synthetic  # noqa: E402
 from tg_analyst.config import get_settings  # noqa: E402
 from tg_analyst.enrich.pipeline import enrich  # noqa: E402
 from tg_analyst.enrich.sentiment import VaderBackend  # noqa: E402
 from tg_analyst.storage.db import init_db, make_engine, make_session_factory  # noqa: E402
+from tg_analyst.storage.models import Job  # noqa: E402
 
 APP = str(Path(__file__).parents[1] / "src/tg_analyst/dashboard/app.py")
 
@@ -112,3 +114,33 @@ def test_show_text_handles_media_only_messages():
     assert show_text(None) == NO_TEXT and show_text("") == NO_TEXT
     assert show_text("@bob [x](y)", hide_names=True) == "@user \\[x\\]\\(y\\)"
     assert show_text("abcdef", limit=3) == "abc"
+
+
+def test_jobs_page_shows_progress(db_url):
+    eng = make_engine(db_url)
+    init_db(eng)
+    factory = make_session_factory(eng)
+    with factory() as s:
+        jobs.enqueue(s, "backfill", {"group": "big_group"})
+        running = jobs.claim_next(s)
+        jobs.enqueue(s, "enrich")
+        s.execute(
+            update(Job)
+            .where(Job.id == running.id)
+            .values(
+                started_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=10),
+                progress={
+                    "fraction": 0.25,
+                    "detail": "40,500 messages stored, up to 2018-08-08",
+                    "updated": datetime.now(UTC).replace(tzinfo=None).isoformat(timespec="seconds"),
+                },
+            )
+        )
+        s.commit()
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.switch_page("views/jobs.py")
+    at.run()
+    assert not at.exception, at.exception
+    captions = " ".join(c.value for c in at.caption)
+    assert "about 30 min left" in captions and "1 job(s) waiting" in captions
+    assert not at.warning  # queued behind a running job is not "worker down"

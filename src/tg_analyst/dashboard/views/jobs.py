@@ -20,6 +20,8 @@ def jobs_page() -> None:
         "The worker needs a logged-in Telegram session: run `tg-analyst login` once."
     )
 
+    _job_table()
+
     with st.form("backfill", clear_on_submit=False):
         st.subheader("Fetch group history")
         group = st.text_input(
@@ -69,8 +71,51 @@ def jobs_page() -> None:
             st.toast(f"Queued demo data job #{jobs.enqueue(s, 'seed').id}")
 
     _sync_controls()
-    _job_table()
     _exclusions()
+
+
+def _target(job) -> str:
+    params = job.params or {}
+    return params.get("group", "") + (" (auto)" if params.get("scheduled") else "")
+
+
+def _duration(delta: timedelta) -> str:
+    """'45 s', '12 min', '2 h 05 min'."""
+    seconds = int(delta.total_seconds())
+    if seconds < 60:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{seconds // 60} min"
+    return f"{seconds // 3600} h {seconds % 3600 // 60:02d} min"
+
+
+def _running(job, now: datetime) -> None:
+    """A progress bar with what the job is doing, how long it has run and is likely to run."""
+    progress = job.progress or {}
+    fraction = progress.get("fraction")
+    title = f"#{job.id} {job.kind} {_target(job)}".strip()
+    detail = progress.get("detail") or "Starting…"
+    label = f"**{escape_md(title)}**: {escape_md(detail)}"
+    if fraction is not None:
+        label += f" ({fraction:.0%})"
+    st.progress(fraction or 0.0, text=label)
+
+    facts = []
+    if job.started_at:
+        facts.append(f"running for {_duration(now - job.started_at)}")
+    if left := jobs.eta(job.started_at, fraction, now):
+        facts.append(f"about {_duration(left)} left")
+    elif fraction is None and job.progress:
+        facts.append("time left unknown for this step")
+    if updated := progress.get("updated"):
+        stale = now - datetime.fromisoformat(updated)
+        if stale > timedelta(minutes=2):
+            facts.append(
+                f"no update for {_duration(stale)}: Telegram may be rate-limiting the worker"
+            )
+    elif job.started_at and now - job.started_at > timedelta(minutes=1):
+        facts.append("this job reports no progress (started before progress tracking)")
+    st.caption(" · ".join(facts))
 
 
 @st.fragment(run_every=5)
@@ -81,22 +126,45 @@ def _job_table() -> None:
     if not rows:
         st.info("No jobs yet.")
         return
-    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=30)
-    if any(j.status == jobs.QUEUED and j.created_at < cutoff for j in rows):
+    now = datetime.now(UTC).replace(tzinfo=None)
+    # Queued jobs behind a long-running one are normal; with nothing running they are not.
+    stuck = any(
+        j.status == jobs.QUEUED and j.created_at < now - timedelta(seconds=30) for j in rows
+    )
+    if stuck and not any(j.status == jobs.RUNNING for j in rows):
         st.warning("Jobs have been queued for over 30 s. Is the worker running?")
+
+    for job in sorted((j for j in rows if j.status == jobs.RUNNING), key=lambda j: j.id):
+        _running(job, now)
+    waiting = sorted((j for j in rows if j.status == jobs.QUEUED), key=lambda j: j.id)
+    if waiting:
+        st.caption(
+            f"{len(waiting)} job(s) waiting; the worker runs one at a time, oldest first. "
+            f"Next: #{waiting[0].id} {waiting[0].kind} {escape_md(_target(waiting[0]))}"
+        )
+
+    def progress_of(j) -> float | None:
+        if j.status == jobs.DONE:
+            return 1.0
+        if j.status in (jobs.RUNNING, jobs.FAILED):
+            return (j.progress or {}).get("fraction")
+        return None
+
     table = pd.DataFrame(
         [
             {
                 "#": j.id,
                 "status": j.status,
                 "task": j.kind,
-                "target": (j.params or {}).get("group", "")
-                + (" (auto)" if (j.params or {}).get("scheduled") else ""),
-                "created (UTC)": j.created_at,
-                "duration": (j.finished_at - j.started_at)
-                if j.finished_at and j.started_at
-                else None,
-                "result": j.result or (j.error or "").split("\n")[0],
+                "target": _target(j),
+                "progress": progress_of(j),
+                "created (UTC)": f"{j.created_at:%Y-%m-%d %H:%M:%S}",
+                "duration": _duration((j.finished_at or now) - j.started_at)
+                if j.started_at
+                else "",
+                "result": j.result
+                or (j.error or "").split("\n")[0]
+                or (j.progress or {}).get("detail", ""),
             }
             for j in rows
         ]
@@ -109,7 +177,12 @@ def _job_table() -> None:
     st.dataframe(
         table.style.map(lambda v: colors.get(v, ""), subset=["status"]),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
+        column_config={
+            "progress": st.column_config.ProgressColumn(
+                "progress", format="percent", min_value=0.0, max_value=1.0
+            ),
+        },
     )
     failed = [j for j in rows if j.status == jobs.FAILED and j.error]
     if failed:

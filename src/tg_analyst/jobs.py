@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime, timedelta
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from tg_analyst.progress import Progress
 from tg_analyst.storage.models import Job
 
 log = logging.getLogger(__name__)
@@ -76,6 +77,44 @@ def _finish(session: Session, job: Job, status: str, result=None, error=None) ->
     session.commit()
 
 
+def progress_reporter(factory: sessionmaker, job_id: int, every: float = 2.0) -> Progress:
+    """A callback that stores a job's progress, at most once per ``every`` seconds.
+
+    It writes in its own short transaction so the Jobs page sees it immediately, and never
+    raises: a progress update must not fail the job.
+    """
+    last = [float("-inf")]
+
+    def report(fraction: float | None, detail: str) -> None:
+        now = time.monotonic()
+        if now - last[0] < every and fraction != 1.0:
+            return
+        last[0] = now
+        value = {
+            "fraction": None if fraction is None else round(fraction, 4),
+            "detail": detail,
+            "updated": _now().isoformat(timespec="seconds"),
+        }
+        try:
+            with factory() as session:
+                session.execute(update(Job).where(Job.id == job_id).values(progress=value))
+                session.commit()
+        except Exception:
+            log.warning("Could not store progress of job %s", job_id, exc_info=True)
+
+    return report
+
+
+def eta(started_at: datetime | None, fraction: float | None, now: datetime) -> timedelta | None:
+    """Time left at the current average speed, once there is enough to extrapolate from."""
+    if started_at is None or not fraction or fraction >= 1.0:
+        return None
+    elapsed = now - started_at
+    if fraction < 0.01 or elapsed < timedelta(seconds=10):
+        return None
+    return elapsed * (1 - fraction) / fraction
+
+
 # --- execution ---------------------------------------------------------------------------
 
 
@@ -105,24 +144,31 @@ def _with_telegram(work) -> object:
     return asyncio.run(run())
 
 
-def _run_backfill(factory: sessionmaker, params: dict) -> str:
+def _run_backfill(factory: sessionmaker, params: dict, report: Progress) -> str:
     from tg_analyst.ingest.service import backfill
 
     since = date.fromisoformat(params["since"]) if params.get("since") else None
     since_dt = datetime(since.year, since.month, since.day, tzinfo=UTC) if since else None
     n = _with_telegram(
         lambda client: backfill(
-            client, factory, params["group"], since=since_dt, limit=params.get("limit")
+            client,
+            factory,
+            params["group"],
+            since=since_dt,
+            limit=params.get("limit"),
+            progress=report,
         )
     )
     return f"Fetched {n} messages from {params['group']}"
 
 
-def _run_sync(factory: sessionmaker, params: dict) -> str:
+def _run_sync(factory: sessionmaker, params: dict, report: Progress) -> str:
     from tg_analyst.ingest.service import reconcile
 
     days = params.get("days", 30)
-    stats = _with_telegram(lambda client: reconcile(client, factory, params["group"], days=days))
+    stats = _with_telegram(
+        lambda client: reconcile(client, factory, params["group"], days=days, progress=report)
+    )
     if stats["edited"]:
         with factory() as session:
             enqueue(session, "enrich", {})  # re-score the edited messages
@@ -133,19 +179,25 @@ def _run_sync(factory: sessionmaker, params: dict) -> str:
     )
 
 
-def _run_enrich(factory: sessionmaker, params: dict) -> str:
+def _run_enrich(factory: sessionmaker, params: dict, report: Progress) -> str:
     from tg_analyst.config import get_settings
     from tg_analyst.enrich.pipeline import enrich
     from tg_analyst.enrich.toxicity import backends
 
     sentiment, toxicity = backends(get_settings(), params.get("backend"))
     with factory() as session:
-        stats = enrich(session, sentiment, group_id=params.get("group_id"), toxicity=toxicity)
+        stats = enrich(
+            session,
+            sentiment,
+            group_id=params.get("group_id"),
+            toxicity=toxicity,
+            progress=report,
+        )
     models = sentiment.version + (f" + {toxicity.version}" if toxicity else "")
     return f"Scored {stats.scored} messages ({stats.skipped} without text) with {models}"
 
 
-def _run_build_edges(factory: sessionmaker, params: dict) -> str:
+def _run_build_edges(factory: sessionmaker, params: dict, report: Progress) -> str:
     from tg_analyst.storage import repository as repo
     from tg_analyst.storage.models import Group
 
@@ -160,7 +212,7 @@ def _run_build_edges(factory: sessionmaker, params: dict) -> str:
     return f"Added {n} interactions"
 
 
-def _run_seed(factory: sessionmaker, params: dict) -> str:
+def _run_seed(factory: sessionmaker, params: dict, report: Progress) -> str:
     from tg_analyst import synthetic
 
     community = synthetic.generate(days=params.get("days", 90))
@@ -169,7 +221,7 @@ def _run_seed(factory: sessionmaker, params: dict) -> str:
     return f"Loaded {len(community.messages)} synthetic messages"
 
 
-def _run_exclude(factory: sessionmaker, params: dict) -> str:
+def _run_exclude(factory: sessionmaker, params: dict, report: Progress) -> str:
     from tg_analyst.storage import repository as repo
 
     with factory() as session:
@@ -183,7 +235,7 @@ def _run_exclude(factory: sessionmaker, params: dict) -> str:
     )
 
 
-def _run_include(factory: sessionmaker, params: dict) -> str:
+def _run_include(factory: sessionmaker, params: dict, report: Progress) -> str:
     from tg_analyst.storage import repository as repo
 
     with factory() as session:
@@ -214,7 +266,8 @@ def run_one(factory: sessionmaker) -> bool:
             return False
         log.info("Running job %s (%s) %s", job.id, job.kind, job.params)
         try:
-            result = RUNNERS[job.kind](factory, job.params or {})
+            report = progress_reporter(factory, job.id)
+            result = RUNNERS[job.kind](factory, job.params or {}, report)
         except Exception as exc:
             log.exception("Job %s failed", job.id)
             _finish(session, job, FAILED, error=f"{exc}\n\n{traceback.format_exc(limit=5)}")
