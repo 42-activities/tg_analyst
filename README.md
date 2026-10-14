@@ -6,7 +6,7 @@ Telegram groups host tech communities, customer support and local and profession
 
 > **Focus:** the sentiment analysis here is about **user relationships and community dynamics**: member-to-member tone, how members treat newcomers, how admins and members interact, and whether conflict is rising. It does not measure market or crypto sentiment.
 
-> **Status:** ingestion, enrichment and a first web UI work. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status:** in production at <https://tg-analyst.naurzalinov.me> (password-protected). Ingestion, Russian-capable sentiment, relationship analytics and the dashboard all work. Next up: database migrations, a per-member page, scheduled refresh, reactions and topics. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -31,52 +31,57 @@ Telegram groups host tech communities, customer support and local and profession
 
 | Layer | Component | Responsibility |
 |---|---|---|
-| 1. Ingestion | Telethon (MTProto) | Back-fills history, streams new messages, captures reply/mention/reaction edges and handles `FloodWaitError` rate limits. |
-| 2. Storage | PostgreSQL 16 | Normalized tables for messages, users and interactions, plus enrichment results. |
-| 3. Enrichment | VADER, HuggingFace (multilingual), optional LLM API | Cleans text, scores polarity (-1.0 to +1.0), flags toxicity, detects intent (question, thanks, complaint, greeting), extracts topics and builds the interaction graph (NetworkX). |
-| 4. Presentation | Streamlit + Plotly | KPI cards, relationship network, sentiment timelines, heatmaps and the message explorer. |
+| 1. Ingestion | Telethon (MTProto) | Resumable history back-fill and a live listener. Builds reply and mention edges and waits out `FloodWaitError` rate limits. |
+| 2. Storage | PostgreSQL 16 | Normalized tables for messages, users and interactions, plus enrichment results and a job queue. |
+| 3. Enrichment | Transformer sentiment (Russian or multilingual model), VADER for English | Cleans text, scores tone (-1.0 to +1.0) and detects intent (question, thanks, complaint, greeting). Toxicity and topics are planned. |
+| 4. Analytics | pandas + NetworkX (pure functions) | Interaction graph, centrality and communities, member roles, newcomer outcomes, conflict episodes. |
+| 5. Presentation | Streamlit + Plotly | Dashboard tabs and a Jobs page that queues work for a background worker. |
 
-### Core data model (draft)
+### Core data model
 
 - **`groups`**: `group_id`, `title`, `username`, `member_count`
 - **`users`**: `user_id`, `username`, `display_name`, `is_bot`, `first_seen`, `last_seen`
 - **`messages`**: `message_id`, `group_id`, `sender_id`, `timestamp`, `text`, `reply_to_msg_id`, `thread_id`, `views`, `forwards`, `has_media`, `media_type`
 - **`interactions`**: `source_user_id`, `target_user_id`, `message_id`, `type` (`reply` | `mention` | `reaction` | `forward`), `timestamp`
 - **`enrichment`**: `message_id`, `sentiment_score`, `sentiment_label`, `toxicity`, `intent`, `topics`, `model_version`
+- **`jobs`**: work queued from the web UI (`backfill`, `enrich`, `build_edges`, `seed`) and run by the worker
 
 ---
 
-## Dashboard modules
+## Dashboard
 
-### Community health and KPI overview
-Message velocity, DAU/WAU/MAU, active vs. lurking members, media-to-text ratio, average replies per message and median time to first reply.
+What the dashboard shows today. ⏳ marks parts that are planned but not built yet.
 
-### Relationship network
-- An interactive **who-talks-to-whom graph**: edge weight is interaction volume and edge colour is average tone.
-- **Pair view**: the sentiment trend between two specific members.
-- **Clusters and cliques**: subgroups detected with community detection (e.g. Louvain).
-- **Bridges and isolates**: members who connect clusters, and members nobody replies to.
+### Overview (top of the page)
+Messages, active members, daily and weekly active members, average tone, share of negative messages, new members, typical wait for a reply, share of replies and of media. The period defaults to the group's whole history.
 
-### Member profiles and roles
-- Per-user tone: how a member **gives** sentiment and how they **receive** it.
-- Role classification: *connector*, *helper* (answers questions), *conversation starter*, *lurker*, *critic*, *newcomer*.
-- Influence ranking: most replied-to members, centrality scores and the members whose messages get the most responses.
+### Activity & mood
+- Daily message volume with a 7-day rolling tone line
+- A day-of-week × hour heatmap of when the community is active
+- Message types (question, thanks, greeting, complaint) and their tone
 
-### Sentiment and mood tracker
-- Community tone over time as a rolling average, overlaid on message volume.
-- Topic sentiment: which subjects bring the group together and which divide it.
-- Conflict detection: bursts of negative reply chains between the same members.
+### Members
+- Per member: messages, how many people they talk to, replies and mentions received, **tone given** (their own messages) vs. **tone received** (what others say to them)
+- **Role** for each member: *helper* (answers questions in a friendly tone), *connector* (bridges sub-groups), *starter* (starts threads others join), *critic*, *lurker*, *newcomer*, *regular*. Thresholds are relative to the group, so the roles adapt to its size and tone.
+- A scatter plot of tone given vs. tone received
 
-### Newcomer and retention analytics
-- Welcome quality: how fast a newcomer's first message gets a response, and in what tone.
-- Cohort retention: are members who join in month X still active N weeks later?
-- Churn signals: activity is falling off or the tone a member receives is turning negative.
+### Network
+- A who-talks-to-whom map: dot size = attention received, colour = sub-group (Louvain communities), line colour = tone of the pair
+- The top connectors, and members nobody ever replied to
 
-### Activity heatmaps
-Day-of-week × hour-of-day matrices that show peak hours, for the whole group or for one member.
+### Relationships
+- The strongest pairs, with tone in each direction and alerts for tense pairs
+- **Conflict episodes:** bursts of hostile exchanges between two members, either mutual (a feud) or one-sided. "Hostile" is relative to the group: its most negative 10% of messages, so rough-but-friendly chats aren't flagged everywhere. **Click an episode to read the actual message chain.**
+- Weekly tone between any two members
 
-### Message and thread explorer
-A filterable table by keyword, date range, user, interaction pair, sentiment and intent, for example *negative replies directed at newcomers in the last 30 days*.
+### Newcomers
+Whether a newcomer's first message got an answer, how fast and in what tone, and whether answered vs. unanswered newcomers were still active 14 days later. This needs join events, which large groups sometimes hide from non-admins.
+
+### Messages
+Search by text, tone and message type.
+
+### ⏳ Planned
+A per-member drill-down page, topic extraction with tone per topic, reactions as interactions, toxicity scores, and scheduled refresh of new messages.
 
 ---
 
@@ -90,7 +95,7 @@ A filterable table by keyword, date range, user, interaction pair, sentiment and
 
 ## Getting started
 
-Development plan: [`docs/ROADMAP.md`](docs/ROADMAP.md). Done so far: ingestion and storage (M1), sentiment and intent enrichment (M2), and a web UI with a job queue and dashboards.
+Development plan: [`docs/ROADMAP.md`](docs/ROADMAP.md). Done so far: ingestion and storage (M1), sentiment and intent (M2), relationship analytics (M3) and most of the dashboard (M4).
 
 ### Prerequisites
 - Docker with Compose v2 (Python 3.12+ too, if you run outside Docker)
@@ -105,7 +110,7 @@ docker compose run --rm app login         # once: enter the code Telegram sends 
 docker compose up -d                      # PostgreSQL + web UI + worker
 ```
 
-Open <http://localhost:8501>. On the **Jobs** page, enter a group (`@name`, `t.me/name` or an id) and click *Queue back-fill*. The worker fetches the history and runs sentiment analysis, and the results show up on the **Dashboard**. *Load demo data* gives you a synthetic community to explore without Telegram.
+Open <http://localhost:8501>. On the **Jobs** page, enter a group (`@name`, a `t.me/…` link, a Telegram Web link such as `web.telegram.org/k/#-1774464434`, or a numeric id) and click *Queue back-fill*. Set *Max messages* to `0` to fetch the whole history. Re-running resumes after the last fetched message, so it never duplicates anything. The worker fetches the history and runs sentiment analysis, and the results show up on the **Dashboard**. *Load demo data* gives you a synthetic community to explore without Telegram.
 
 - **Remote server:** the UI has no login and listens on 127.0.0.1 only. Use an SSH tunnel: `ssh -L 8501:localhost:8501 <server>`.
 - **Sentiment model:** the image includes CPU-only torch + transformers. Production uses `SENTIMENT_BACKEND=hf` with `cointegrated/rubert-tiny-sentiment-balanced`, a small Russian model (~70 msg/s on this server). For other languages, set `HF_SENTIMENT_MODEL=cardiffnlp/twitter-xlm-roberta-base-sentiment`, which is multilingual but ~18× slower and needs ~1.4 GB RAM. `vader` works for English only. Changing the model re-scores messages on the next enrichment run.
@@ -178,13 +183,14 @@ tg_analyst/
 │   ├── storage/           # SQLAlchemy models, upserts, interaction-edge builder
 │   ├── jobs.py            # DB-backed job queue + worker
 │   ├── enrich/            # cleaning, sentiment backends (VADER / HF), intent
-│   ├── analytics/         # loaders + pure metric functions
-│   ├── dashboard/         # Streamlit app: pages/dashboard.py, pages/jobs.py
-│   └── graph/             # (M3) centrality, communities, roles
+│   ├── analytics/         # loaders + pure functions: metrics, newcomers, conflict
+│   ├── graph/             # interaction graph, centrality, communities, roles
+│   └── dashboard/         # Streamlit app: pages/dashboard.py, pages/jobs.py
 ├── tests/
 ├── docs/ROADMAP.md
 ├── Dockerfile, docker-compose.yml
-├── .github/workflows/ci.yml
+├── .github/workflows/     # pipeline.yml → ci.yml + docker-deploy.yml
+├── deploy/nginx/          # production nginx site (basic auth, WebSocket proxy)
 ├── CLAUDE.md
 └── README.md
 ```

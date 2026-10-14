@@ -8,7 +8,7 @@ TG Analyst is a Telegram community intelligence platform with four stages: **ing
 
 **Domain focus:** the analysis is about **user relationships and community dynamics**: who interacts with whom, the tone between members, how newcomers are treated, member roles, conflict and churn. It is **not** a crypto, market or ticker sentiment tool. Do not add finance-specific features (tickers, price correlation, hype tracking) unless asked.
 
-Milestones 1–3 (ingestion, enrichment, relationship analytics) and most of the M4 dashboard are implemented. If a module from the planned layout doesn't exist yet, create it where the layout below puts it.
+Milestones 1–3 (ingestion, enrichment, relationship analytics) and most of the M4 dashboard are implemented and running in production. The remaining work is in `docs/ROADMAP.md` (M4 drill-down, M5 hardening). If a module from the planned layout doesn't exist yet, create it where the layout below puts it.
 
 ## Tech stack
 
@@ -16,7 +16,7 @@ Milestones 1–3 (ingestion, enrichment, relationship analytics) and most of the
 - **Telethon** for the MTProto client. It is async-first.
 - **SQLAlchemy 2.x** on **PostgreSQL only** (psycopg 3). SQLite was deliberately dropped, so PostgreSQL features (`ON CONFLICT`, advisory locks, JSON) are fine to use.
 - **pandas** for analytics and **NetworkX** for the interaction graph.
-- **VADER** as the fast English baseline. For non-English or mixed chats (common in Telegram), use a multilingual **HuggingFace** model such as `cardiffnlp/twitter-xlm-roberta-base-sentiment`. An LLM API is an optional, pluggable backend.
+- Sentiment backends: **VADER** (English only) and **HuggingFace** transformers. Production chats are mostly Russian, so production uses `cointegrated/rubert-tiny-sentiment-balanced` (~70 msg/s on the arm64 server, ~0.5 GB RAM). `cardiffnlp/twitter-xlm-roberta-base-sentiment` is the multilingual alternative, but it's ~18× slower and needs ~1.4 GB RAM; the server has little to spare. An LLM API is an optional, pluggable backend.
 - **Streamlit + Plotly** for the dashboard.
 - **pytest** for tests and **ruff** for lint and format.
 
@@ -28,8 +28,8 @@ src/tg_analyst/
   ingest/        # Telethon client, backfill, live listener
   storage/       # ORM models, repositories, migrations (alembic)
   enrich/        # text cleaning, sentiment, toxicity, intent, topics
-  graph/         # interaction graph building, centrality, communities, roles
-  analytics/     # pure functions: DataFrame in -> metrics/DataFrame out
+  graph/         # network.py (graph, centrality, communities), roles.py
+  analytics/     # load.py (only I/O) + pure functions: metrics, newcomers, conflict
   dashboard/     # Streamlit app.py + pages/
 tests/
 data/            # local DB and *.session files; git-ignored
@@ -54,6 +54,11 @@ docker compose up -d db && docker compose run --rm app seed   # containerized st
 
 ## Workflow
 
+- **Never develop in `~/projects/tg_analyst`.** It's the production checkout: the deploy runs `git checkout` there and aborts if tracked files have uncommitted edits. Work in the git worktree `~/projects/tg_analyst-dev` (own `.venv`) on a feature branch, then fast-forward `main` and push.
+- Run tests against a throwaway PostgreSQL, not the production compose DB: `docker run -d --rm --name tga_testpg -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -p 127.0.0.1:55433:5432 postgres:16-alpine`, then `TEST_DATABASE_URL=postgresql+psycopg://test:test@127.0.0.1:55433/tg_analyst_test pytest`.
+- Check analytics changes against the synthetic ground truth (tests) **and** the real production data (read-only, aggregates only, never print message text or names). Rules tuned on synthetic data have broken on the real chat before: a fixed -0.3 hostility cut-off flagged 234 "conflicts" in a rough-but-friendly Russian chat.
+- Writing GitHub secrets (`gh secret set`) and adding SSH keys are blocked for Claude. Prepare the change, then give the user the exact command to run.
+
 - Plan and progress are tracked in `docs/ROADMAP.md`. Tick items off as they land.
 - `pipeline.yml` runs `ci.yml` (ruff, pytest on Python 3.12 + PostgreSQL 16, Docker smoke test), then `docker-deploy.yml`. **Every push to `main` deploys to production** (arm64 image → GHCR → SSH → `docker compose up`, with health check and rollback). Keep CI green: run `ruff check`, `ruff format --check` and `pytest` before committing.
 - `docker-deploy.yml` is a verbatim copy of `bakyt92/ci-templates`. Change it there first, then re-copy it.
@@ -69,6 +74,8 @@ docker compose up -d db && docker compose run --rm app seed   # containerized st
 - **Streamlit pages** live in `dashboard/pages/*.py`, with shared cached resources in `dashboard/common.py`. `tests/test_web.py` smoke-tests them headlessly with `AppTest`.
 - `init_db` must stay safe when several processes call it at once: it takes a PostgreSQL advisory lock.
 - **The interaction edge is the core unit.** Replies, mentions, reactions and forwards each become a row in `interactions` (`source_user_id → target_user_id`). Relationship metrics such as pair sentiment, centrality and roles derive from these edges joined with message sentiment, so keep edge extraction correct and complete.
+- **Thresholds are relative to the group.** Roles use percentiles and medians, and conflict "hostility" is the group's most negative 10% (never above -0.3). Don't hard-code absolute tone cut-offs: chats differ hugely in baseline tone.
+- **User content is untrusted.** Render message text with `escape_md()` (no Markdown, links or images from chat text), never with `unsafe_allow_html`. When pseudonymization is on, mask @usernames inside text as well as names.
 - **Sentiment is directional.** Store a message's sentiment once, then attribute it to the edge. "Sentiment given" (as sender) and "sentiment received" (as target) are different metrics, so don't conflate them.
 - **Ingestion must be idempotent.** Upsert on `(group_id, message_id)`. Track a per-group high-water mark (`last_message_id`) so back-fills can resume and incremental runs stay cheap.
 - **Handle rate limits.** Catch Telethon's `FloodWaitError` and sleep for `e.seconds`. Never use tight loops against the API.
