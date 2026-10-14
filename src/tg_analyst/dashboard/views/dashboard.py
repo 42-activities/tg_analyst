@@ -1,7 +1,6 @@
 """Dashboard page: community activity, mood, members and relationships."""
 
 import math
-import re
 from datetime import date, datetime, timedelta
 
 import networkx as nx
@@ -21,12 +20,11 @@ from tg_analyst.dashboard.common import (
     escape_md,
     fmt,
     fmt_duration,
+    show_text,
     tone_style,
 )
 from tg_analyst.graph import network
 from tg_analyst.graph.roles import ROLE_DESCRIPTIONS, ROLE_ORDER
-
-MENTION = re.compile(r"(?<!\w)@\w{2,}")
 
 
 def dashboard_page() -> None:
@@ -179,6 +177,7 @@ def _members_tab(msgs: pd.DataFrame, edges: pd.DataFrame, names: dict, rel: dict
         return
     stats["name"] = stats["user_id"].map(names)
     stats["role"] = stats["user_id"].map(rel["roles"]).fillna("regular")
+    st.page_link("views/member.py", label="Open a member's full profile", icon=":material/person:")
     counts = stats["role"].value_counts()
     c1, c2 = st.columns([2, 3])
     chosen = c1.multiselect(
@@ -365,7 +364,7 @@ def _episode_transcript(
 ) -> None:
     def show(text: str) -> str:
         # Pseudonymization also masks @usernames inside message text.
-        return escape_md(MENTION.sub("@user", text) if hide_names else text)
+        return show_text(text, hide_names)
 
     a, b = int(episode["user_a"]), int(episode["user_b"])
     chain = conflict.episode_messages(

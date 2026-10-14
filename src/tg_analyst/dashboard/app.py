@@ -11,9 +11,10 @@ st.set_page_config(page_title="TG Analyst", page_icon="📊", layout="wide")
 pg = st.navigation(
     [
         st.Page(
-            "pages/dashboard.py", title="Dashboard", icon=":material/monitoring:", default=True
+            "views/dashboard.py", title="Dashboard", icon=":material/monitoring:", default=True
         ),
-        st.Page("pages/jobs.py", title="Jobs", icon=":material/sync:", url_path="jobs"),
+        st.Page("views/member.py", title="Member", icon=":material/person:", url_path="member"),
+        st.Page("views/jobs.py", title="Jobs", icon=":material/sync:", url_path="jobs"),
     ]
 )
 pg.run()

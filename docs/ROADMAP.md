@@ -52,7 +52,7 @@ Goal: pure functions that turn the database into relationship metrics.
 Goal: a Streamlit app over M3.
 
 - [x] Global filters: group, date range (defaults to the group's data); keyword/tone/type in the explorer
-- [ ] Per-user drill-down page
+- [x] Per-member page: profile, role, activity and tone over time, writing hours, partners with tone each way, conflicts, recent messages (`/member?user=<id>`)
 - [x] Tabs: Activity & mood, Members (with roles), Network, Relationships (with conflicts and pair timelines), Newcomers, Messages
 - [x] Pseudonymization toggle for screenshots and sharing
 

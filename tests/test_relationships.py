@@ -296,3 +296,42 @@ def test_feud_transcript_is_mostly_hostile(world):
     assert set(exchange["sender_id"]) == {by_name["feuda"], by_name["feudb"]}
     assert exchange["hostile"].mean() > 0.5
     assert chain["timestamp"].is_monotonic_increasing
+
+
+# --- member page ---------------------------------------------------------------------------
+
+
+def test_member_summary_and_partners(world):
+    from tg_analyst.analytics import members
+
+    c, msgs, edges, by_name = world
+    helper, feud_a, feud_b = by_name["helper1"], by_name["feuda"], by_name["feudb"]
+
+    s = members.member_summary(msgs, edges, helper)
+    assert s["messages"] > 100 and s["tone_given"] > 0.2 and s["talks_to"] > 10
+    assert 0 < s["messages_answered"] <= 1 and s["first_seen"] <= s["last_seen"]
+    assert members.member_summary(msgs, edges, 999_999) == {}
+
+    partners = members.member_partners(edges, feud_a)
+    top = partners.iloc[0]
+    assert top["partner_id"] == feud_b and top["tone_to_them"] < 0 and top["tone_from_them"] < 0
+    assert (partners["total"] == partners["to_them"] + partners["from_them"]).all()
+
+    weekly = members.member_activity(msgs, helper)
+    assert weekly["messages"].sum() == s["messages"]
+
+
+def test_short_period_does_not_make_everyone_a_newcomer(world):
+    _, msgs, edges, _ = world
+    last = msgs["timestamp"].max()
+    window = msgs[msgs["timestamp"] >= last - timedelta(days=20)]
+    window_edges = edges[edges["timestamp"] >= last - timedelta(days=20)]
+    feats = roles.member_features(window, network.centrality(network.build_graph(window_edges)))
+    assigned = roles.classify_roles(feats, last)
+    newcomers_found = set(assigned[assigned == "newcomer"].index)
+    joined = set(newcomers.join_times(window))
+    # Only people with a join event in the window (or first seen well after its start).
+    assert newcomers_found and newcomers_found <= joined | set(
+        feats.index[feats["first_seen"] >= window["timestamp"].min() + timedelta(days=7)]
+    )
+    assert (assigned == "newcomer").mean() < 0.5

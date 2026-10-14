@@ -85,6 +85,8 @@ def classify_roles(
     period_end,
     newcomer_days: int = 30,
     lurker_fraction: float = 0.15,
+    data_start=None,
+    start_grace_days: int = 7,
 ) -> pd.Series:
     """Assign one role per member (Series indexed by user_id)."""
     if feats.empty:
@@ -100,9 +102,16 @@ def classify_roles(
     betweenness_cut = max(0.05, ref["betweenness"].quantile(0.9))
     starters_cut = ref["threads_started"].quantile(0.8)
     newcomer_since = pd.Timestamp(period_end) - timedelta(days=newcomer_days)
+    # Without a join event, "first seen recently" only means new if it's clearly after the
+    # start of the data: people who show up in the first days were probably already members
+    # (otherwise everyone is a "newcomer" when the period is short).
+    first_data = pd.Timestamp(data_start) if data_start is not None else feats["first_seen"].min()
+    seen_late = first_data + timedelta(days=start_grace_days)
 
     def role(row) -> str:
-        if pd.notna(row["member_since"]) and row["member_since"] >= newcomer_since:
+        joined_recently = pd.notna(row["joined"]) and row["joined"] >= newcomer_since
+        first_seen_recently = row["first_seen"] >= max(newcomer_since, seen_late)
+        if joined_recently or first_seen_recently:
             return "newcomer"
         if row["messages"] <= lurker_max:
             return "lurker"

@@ -115,3 +115,11 @@ _MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|>~<])")
 def escape_md(text: str) -> str:
     """Show chat text literally: no Markdown formatting, links or images from user content."""
     return _MD_SPECIAL.sub(r"\\\1", text)
+
+
+MENTION = re.compile(r"(?<!\w)@\w{2,}")
+
+
+def show_text(text: str, hide_names: bool = False) -> str:
+    """Chat text safe to render: escaped, with @usernames masked when pseudonymizing."""
+    return escape_md(MENTION.sub("@user", text) if hide_names else text)

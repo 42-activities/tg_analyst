@@ -70,10 +70,30 @@ def test_dashboard_with_data(db_url):
 
 def test_jobs_page_queues_backfill(db_url):
     at = AppTest.from_file(APP, default_timeout=30)
-    at.switch_page("pages/jobs.py")
+    at.switch_page("views/jobs.py")
     at.run()
     assert not at.exception, at.exception
     at.text_input[0].input("https://t.me/some_group/")
     at.button[0].click().run()  # the form submit button comes first
     assert any("Queued job" in s.value and "some_group" in s.value for s in at.success)
     assert any("Nobody is excluded" in i.value for i in at.info)
+
+
+def test_member_page(db_url):
+    eng = make_engine(db_url)
+    init_db(eng)
+    with make_session_factory(eng)() as s:
+        community = synthetic.generate(
+            days=20, start=datetime.now().replace(microsecond=0) - timedelta(days=21)
+        )
+        synthetic.load(s, community)
+        enrich(s, VaderBackend())
+    feud_a = next(u.user_id for u in community.users if u.username == "feuda")
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.switch_page("views/member.py")
+    at.query_params["user"] = str(feud_a)
+    at.run()
+    assert not at.exception, at.exception
+    assert at.title[0].value == "feuda"
+    assert "first message" in at.caption[0].value  # role, community and dates line
+    assert any(sub.value == "Conflict episodes" for sub in at.subheader)
