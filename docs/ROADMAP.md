@@ -64,4 +64,31 @@ Goal: a Streamlit app over M3.
 - [ ] Topic extraction (keywords, then BERTopic)
 - [x] Docker image; arm64 auto-deploy on push to `main` with rollback
 - [x] Public URL with HTTPS and basic auth (https://tg-analyst.naurzalinov.me)
-- [ ] Scheduled enrichment
+- [ ] Sync with Telegram: apply edits and deletions (listener events + periodic re-check of stored messages)
+- [ ] Scheduled refresh: periodic incremental back-fill + enrichment for every group
+
+## M6 — Ask the chat (RAG) — planned, not started
+Goal: answer practical questions from the group's collective memory (titre de séjour, préfecture, plan de formation, banks, 42 rules…) and cite the original messages.
+
+```
+messages ──▶ chunk builder ──▶ chunks (+ chunk_messages) ──▶ embeddings (pgvector)
+   (worker job, like enrich)                                        │
+question ──▶ embed ──▶ hybrid search (vector + PostgreSQL full-text) ┴▶ top-k threads ──▶ LLM ──▶ answer with message links
+```
+
+**Prerequisites (before relying on it)**
+- [ ] Database in sync with Telegram (edits/deletions, see M5). Deletions must also remove chunks and embeddings, or answers keep quoting deleted messages.
+- [ ] Privacy and consent (GDPR applies): keep it private to the group, pseudonymize names in answers, honour opt-outs (`excluded_users`), and decide whether chat text may go to a cloud LLM or must stay on a local model.
+- [ ] Content stays private: the repo is public, so test data stays synthetic. Chunks and embeddings live only in the production database.
+
+**Phase 1: retrieval only, no LLM**
+- [ ] Storage: the `pgvector` extension in the same PostgreSQL (image `pgvector/pgvector:pg16` instead of `postgres:16-alpine`), via an Alembic migration
+- [ ] Conversation chunks, not single messages: reply chains (`reply_to_msg_id`, `thread_id`) plus nearby messages in a time window, i.e. "question + the answers it got". Table `chunk_messages(chunk_id, group_id, message_id)` so every result can cite its messages.
+- [ ] Multilingual embeddings (RU/FR/EN): `BAAI/bge-m3` or `intfloat/multilingual-e5-base` in an optional extra, run as a worker batch job, with `model_version` like enrichment. Check RAM: the server has ~2 GB free.
+- [ ] Hybrid search: vector similarity + PostgreSQL full-text, for exact terms like "titre", "RIB", "APL"
+- [ ] Dashboard search page that shows the matching threads, with recency shown and favoured
+- [ ] Evaluate retrieval quality on real questions before building phase 2
+
+**Phase 2: answers**
+- [ ] Pluggable LLM backend (e.g. Claude) that answers only from the retrieved threads, cites message links, and is date-aware (older admin advice may be outdated)
+- [ ] Serving: a small `rag` service the dashboard calls, for interactive latency (the dashboard itself must not run models)
