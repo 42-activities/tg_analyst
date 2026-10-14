@@ -111,3 +111,55 @@ def hostility_threshold(tones: pd.Series, quantile: float = 0.1, ceiling: float 
     if scored.empty:
         return ceiling
     return float(min(ceiling, scored.quantile(quantile)))
+
+
+TRANSCRIPT_COLUMNS = [
+    "message_id",
+    "timestamp",
+    "sender_id",
+    "text",
+    "sentiment_score",
+    "reply_to_msg_id",
+    "kind",
+    "hostile",
+]
+
+
+def episode_messages(
+    msgs: pd.DataFrame,
+    edges: pd.DataFrame,
+    user_a: int,
+    user_b: int,
+    start,
+    end,
+    negative_below: float,
+    pad_hours: float = 2,
+    limit: int = 300,
+) -> pd.DataFrame:
+    """The message chain behind a conflict episode, oldest first.
+
+    Includes every reply/mention between the two members from ``pad_hours`` before the
+    episode to ``pad_hours`` after it (``kind="exchange"``), plus the messages those
+    replies answer when they are not already in the chain (``kind="context"``), so the
+    reader can see what each hostile reply was reacting to. ``hostile`` marks exchange
+    messages at or below ``negative_below``.
+    """
+    pad = timedelta(hours=pad_hours)
+    pair = {user_a, user_b}
+    window = edges[
+        edges["source_user_id"].isin(pair)
+        & edges["target_user_id"].isin(pair)
+        & (edges["source_user_id"] != edges["target_user_id"])
+        & (edges["timestamp"] >= pd.Timestamp(start) - pad)
+        & (edges["timestamp"] <= pd.Timestamp(end) + pad)
+    ]
+    ids = set(window["message_id"])
+    if not ids:
+        return pd.DataFrame(columns=TRANSCRIPT_COLUMNS)
+    cols = ["message_id", "timestamp", "sender_id", "text", "sentiment_score", "reply_to_msg_id"]
+    exchange = msgs[msgs["message_id"].isin(ids)][cols].assign(kind="exchange")
+    parent_ids = set(exchange["reply_to_msg_id"].dropna().astype(int)) - ids
+    context = msgs[msgs["message_id"].isin(parent_ids)][cols].assign(kind="context")
+    out = pd.concat([exchange, context], ignore_index=True).sort_values("timestamp")
+    out["hostile"] = (out["kind"] == "exchange") & (out["sentiment_score"] <= negative_below)
+    return out.head(limit).reset_index(drop=True)[TRANSCRIPT_COLUMNS]

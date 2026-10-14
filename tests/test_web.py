@@ -63,6 +63,9 @@ def test_dashboard_with_data(db_url):
     at = _app()
     assert at.title[0].value == "Synthetic Dev Community"
     assert [m.label for m in at.metric][:2] == ["Messages", "Active members"]
+    # The feud is detected and its message chain is rendered in the Relationships tab.
+    assert len(at.chat_message) > 10
+    assert any("hostile" in c.value for c in at.caption)
 
 
 def test_jobs_page_queues_backfill(db_url):

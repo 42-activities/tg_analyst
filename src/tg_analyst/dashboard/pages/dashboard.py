@@ -1,6 +1,7 @@
 """Dashboard page: community activity, mood, members and relationships."""
 
 import math
+import re
 from datetime import date, datetime, timedelta
 
 import networkx as nx
@@ -9,7 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from tg_analyst.analytics import metrics
+from tg_analyst.analytics import conflict, metrics
 from tg_analyst.dashboard.common import (
     TONE_SCALE,
     cached_date_range,
@@ -17,12 +18,15 @@ from tg_analyst.dashboard.common import (
     cached_groups,
     cached_messages,
     cached_relationships,
+    escape_md,
     fmt,
     fmt_duration,
     tone_style,
 )
 from tg_analyst.graph import network
 from tg_analyst.graph.roles import ROLE_DESCRIPTIONS, ROLE_ORDER
+
+MENTION = re.compile(r"(?<!\w)@\w{2,}")
 
 
 def dashboard_page() -> None:
@@ -77,7 +81,7 @@ def dashboard_page() -> None:
     with tabs[2]:
         _network_tab(msgs, names, rel)
     with tabs[3]:
-        _relationships_tab(edges, names, rel)
+        _relationships_tab(msgs, edges, names, rel, hide_names)
     with tabs[4]:
         _newcomers_tab(names, rel)
     with tabs[5]:
@@ -238,7 +242,9 @@ def _members_tab(msgs: pd.DataFrame, edges: pd.DataFrame, names: dict, rel: dict
         st.plotly_chart(fig, use_container_width=True)
 
 
-def _relationships_tab(edges: pd.DataFrame, names: dict, rel: dict) -> None:
+def _relationships_tab(
+    msgs: pd.DataFrame, edges: pd.DataFrame, names: dict, rel: dict, hide_names: bool = False
+) -> None:
     if edges.empty:
         st.info("No replies or mentions between members in this period.")
         return
@@ -275,12 +281,15 @@ def _relationships_tab(edges: pd.DataFrame, names: dict, rel: dict) -> None:
     else:
         st.caption(
             "Three or more hostile replies/mentions between the same two members, at most a week "
-            "apart. **Mutual** = both sides hostile (a feud); otherwise one-sided."
+            f"apart, where hostility dominated their exchange. Hostile = tone ≤ "
+            f"{rel['hostility_threshold']:+.2f} (this group's most negative 10%). **Mutual** = "
+            "both sides hostile (a feud); otherwise one-sided. **Click a row to read the "
+            "messages.**"
         )
         view = episodes.assign(
             member_a=episodes["user_a"].map(names), member_b=episodes["user_b"].map(names)
         )
-        st.dataframe(
+        picked = st.dataframe(
             view[
                 [
                     "member_a",
@@ -294,6 +303,9 @@ def _relationships_tab(edges: pd.DataFrame, names: dict, rel: dict) -> None:
             ],
             hide_index=True,
             use_container_width=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="conflict_episodes",
             column_config={
                 "member_a": "Member A",
                 "member_b": "Member B",
@@ -304,6 +316,9 @@ def _relationships_tab(edges: pd.DataFrame, names: dict, rel: dict) -> None:
                 "mean_tone": st.column_config.NumberColumn("Tone", format="%+.2f"),
             },
         )
+        rows = picked.selection.rows if picked is not None else []
+        episode = episodes.iloc[rows[0] if rows else 0]
+        _episode_transcript(msgs, edges, names, episode, rel["hostility_threshold"], hide_names)
 
     st.subheader("Tone between two members over time")
     timeline = rel["pair_timeline"]
@@ -343,6 +358,51 @@ def _relationships_tab(edges: pd.DataFrame, names: dict, rel: dict) -> None:
             legend=dict(orientation="h", y=1.12),
         )
         st.plotly_chart(fig, use_container_width=True)
+
+
+def _episode_transcript(
+    msgs, edges, names: dict, episode, threshold: float, hide_names: bool = False
+) -> None:
+    def show(text: str) -> str:
+        # Pseudonymization also masks @usernames inside message text.
+        return escape_md(MENTION.sub("@user", text) if hide_names else text)
+
+    a, b = int(episode["user_a"]), int(episode["user_b"])
+    chain = conflict.episode_messages(
+        msgs, edges, a, b, episode["start"], episode["end"], negative_below=threshold
+    )
+    name_a, name_b = names.get(a, str(a)), names.get(b, str(b))
+    st.markdown(
+        f"**{escape_md(name_a)} ↔ {escape_md(name_b)}**, "
+        f"{episode['start']:%Y-%m-%d %H:%M} – {episode['end']:%Y-%m-%d %H:%M}: "
+        f"{len(chain[chain['kind'] == 'exchange'])} messages between them, "
+        f"{int(chain['hostile'].sum())} hostile"
+    )
+    if chain.empty:
+        st.info("The messages for this episode are outside the selected period.")
+        return
+    avatars = {a: "🟦", b: "🟧"}
+    by_id = chain.set_index("message_id")
+    with st.container(height=520):
+        for row in chain.itertuples():
+            who = names.get(row.sender_id, str(row.sender_id))
+            with st.chat_message(name=who, avatar=avatars.get(row.sender_id, "💬")):
+                meta = [f"**{escape_md(who)}**", f"{row.timestamp:%Y-%m-%d %H:%M}"]
+                if pd.notna(row.sentiment_score):
+                    meta.append(f"tone {row.sentiment_score:+.2f}")
+                if row.hostile:
+                    meta.append("🔴 hostile")
+                if row.kind == "context":
+                    meta.append("_context: the message being replied to_")
+                st.caption(" · ".join(meta))
+                if pd.notna(row.reply_to_msg_id) and int(row.reply_to_msg_id) in by_id.index:
+                    parent = by_id.loc[int(row.reply_to_msg_id)]
+                    snippet = (parent["text"] or "")[:80]
+                    st.caption(
+                        f"↪ replying to {escape_md(names.get(parent['sender_id'], ''))}: "
+                        f"{show(snippet)}"
+                    )
+                st.markdown(show(row.text) if row.text else "_(no text: media or sticker)_")
 
 
 def _network_tab(msgs: pd.DataFrame, names: dict, rel: dict) -> None:

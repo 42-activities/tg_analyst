@@ -234,3 +234,65 @@ def test_banter_with_mostly_friendly_exchange_is_not_a_conflict():
     )
     assert conflict.detect_conflicts(edges, negative_below=-0.3).empty
     assert len(conflict.detect_conflicts(edges, negative_below=-0.3, min_hostile_share=0)) == 1
+
+
+def test_episode_messages_build_the_chain_with_context():
+    t0 = pd.Timestamp("2026-01-01 12:00")
+    msgs = pd.DataFrame(
+        {
+            "message_id": [1, 2, 3, 4, 5],
+            "timestamp": [t0 + timedelta(minutes=i) for i in range(5)],
+            "sender_id": [3, 1, 2, 1, 2],
+            "text": ["question from someone else", "you're wrong", "no, YOU are", "idiot", "ok"],
+            "sentiment_score": [0.0, -0.7, -0.8, -0.9, 0.1],
+            "reply_to_msg_id": [None, 1, 2, 3, 4],
+        }
+    )
+    edges = pd.DataFrame(
+        {
+            "source_user_id": [1, 2, 1, 2],
+            "target_user_id": [3, 1, 2, 1],
+            "message_id": [2, 3, 4, 5],
+            "sentiment_score": [-0.7, -0.8, -0.9, 0.1],
+            "timestamp": msgs["timestamp"].iloc[1:].tolist(),
+        }
+    )
+    chain = conflict.episode_messages(
+        msgs,
+        edges,
+        1,
+        2,
+        t0 + timedelta(minutes=2),
+        t0 + timedelta(minutes=3),
+        negative_below=-0.5,
+    )
+    # Message 2 replies to user 3, so it is context (the parent of 3), not exchange.
+    assert chain["message_id"].tolist() == [2, 3, 4, 5]
+    assert chain.set_index("message_id")["kind"].to_dict() == {
+        2: "context",
+        3: "exchange",
+        4: "exchange",
+        5: "exchange",
+    }
+    assert chain.set_index("message_id")["hostile"].to_dict() == {
+        2: False,
+        3: True,
+        4: True,
+        5: False,
+    }
+    assert conflict.episode_messages(
+        msgs, edges, 1, 2, t0 + timedelta(days=9), t0 + timedelta(days=10), -0.5
+    ).empty
+
+
+def test_feud_transcript_is_mostly_hostile(world):
+    _, msgs, edges, by_name = world
+    ep = conflict.detect_conflicts(edges).iloc[0]
+    thr = conflict.hostility_threshold(edges["sentiment_score"])
+    chain = conflict.episode_messages(
+        msgs, edges, ep["user_a"], ep["user_b"], ep["start"], ep["end"], thr
+    )
+    exchange = chain[chain["kind"] == "exchange"]
+    assert set(exchange["sender_id"]) == {by_name["feuda"], by_name["feudb"]}
+    assert exchange["hostile"].mean() > 0.5
+    assert chain["timestamp"].is_monotonic_increasing

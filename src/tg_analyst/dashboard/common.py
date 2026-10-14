@@ -1,5 +1,6 @@
 """Shared cached resources and helpers for the Streamlit pages."""
 
+import re
 from datetime import datetime
 
 import pandas as pd
@@ -101,5 +102,16 @@ def cached_relationships(group_id: int, start: datetime, end: datetime) -> dict:
         "newcomers": outcomes,
         "newcomer_summary": newcomers.newcomer_summary(outcomes),
         "conflicts": conflict.detect_conflicts(edges),
+        "hostility_threshold": conflict.hostility_threshold(edges["sentiment_score"])
+        if "sentiment_score" in edges
+        else -0.3,
         "pair_timeline": conflict.pair_tone_timeline(edges),
     }
+
+
+_MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|>~<])")
+
+
+def escape_md(text: str) -> str:
+    """Show chat text literally: no Markdown formatting, links or images from user content."""
+    return _MD_SPECIAL.sub(r"\\\1", text)
