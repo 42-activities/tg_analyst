@@ -16,6 +16,7 @@ from tg_analyst.dashboard.common import (
     cached_relationships,
     cached_terms,
     fmt,
+    reactions_toggle,
     show_text,
     tone_style,
 )
@@ -33,6 +34,7 @@ def member_page() -> None:
         labels = {r.group_id: r.title or r.username or str(r.group_id) for r in groups.itertuples()}
         group_id = st.selectbox("Group", list(labels), format_func=labels.get)
         hide_names = st.toggle("Pseudonymize members", help="For screenshots and sharing")
+        with_reactions = reactions_toggle()
 
     first, last = cached_date_range(group_id)
     if first is None:
@@ -41,8 +43,8 @@ def member_page() -> None:
     start = datetime.combine(first.date(), datetime.min.time())
     end = datetime.combine(last.date() + timedelta(days=1), datetime.min.time())
     msgs = cached_messages(group_id, start, end)
-    edges = cached_edges(group_id, start, end)
-    rel = cached_relationships(group_id, start, end)
+    edges = cached_edges(group_id, start, end, with_reactions)
+    rel = cached_relationships(group_id, start, end, with_reactions)
 
     names = dict(zip(msgs["sender_id"], msgs["name"], strict=False))
     if hide_names:
@@ -100,6 +102,11 @@ def member_page() -> None:
         help="Share of their messages that got a reply from someone else",
     )
 
+    if summary["reactions_given"] or summary["reactions_received"]:
+        st.caption(
+            f"Reactions: gave {summary['reactions_given']:,} · "
+            f"received {summary['reactions_received']:,} (one per message and person)"
+        )
     _activity(msgs, user_id)
     _partners(edges, user_id, names)
     terms = cached_terms(group_id, start, end)

@@ -7,7 +7,13 @@ from datetime import UTC, datetime
 
 from telethon.tl import types
 
-from tg_analyst.storage.records import GroupRecord, MessageRecord, UserRecord
+from tg_analyst.storage.records import (
+    GroupRecord,
+    MessageRecord,
+    ReactionRecord,
+    ReactionSummary,
+    UserRecord,
+)
 
 _JOIN_ACTIONS = (
     types.MessageActionChatAddUser,
@@ -148,3 +154,42 @@ def message_to_record(msg, group_id: int) -> MessageRecord:
         text, getattr(msg, "entities", None)
     )
     return record
+
+
+def reaction_emoji(reaction) -> str | None:
+    """The emoji of a reaction, "custom" for custom emoji, None for paid (star) reactions."""
+    if isinstance(reaction, types.ReactionEmoji):
+        return reaction.emoticon
+    if isinstance(reaction, types.ReactionCustomEmoji):
+        return "custom"
+    return None
+
+
+def peer_reactions_to_records(peer_reactions) -> list[ReactionRecord]:
+    """MessagePeerReaction objects -> records (paid reactions skipped)."""
+    from telethon.utils import get_peer_id
+
+    out = []
+    for pr in peer_reactions or []:
+        emoji = reaction_emoji(pr.reaction)
+        if emoji is not None:
+            out.append(ReactionRecord(get_peer_id(pr.peer_id), emoji, to_naive_utc(pr.date)))
+    return out
+
+
+def reactions_to_summary(msg) -> ReactionSummary:
+    """The reactions a message carries: the total and its most recent reactors.
+
+    A message without reactions yields a complete, empty summary, so reactions that were
+    taken back are removed on the next sync.
+    """
+    reactions = getattr(msg, "reactions", None)
+    if reactions is None:
+        return ReactionSummary(msg.id, 0)
+    total = sum(r.count for r in reactions.results or [] if reaction_emoji(r.reaction))
+    return ReactionSummary(
+        msg.id,
+        total,
+        peer_reactions_to_records(reactions.recent_reactions),
+        visible=bool(reactions.can_see_list),
+    )

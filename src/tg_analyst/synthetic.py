@@ -3,14 +3,21 @@
 The generated group has recognizable relationship patterns so analytics can be checked
 against known ground truth: helpful members, a pair of members in a running feud, a
 critic, lurkers, a bot, and newcomers who either get welcomed (and stay) or get ignored
-(and churn).
+(and churn). Reactions follow the same story: helpers collect 👍 and ❤️, and the feuding
+pair throw 🤡 and 👎 at each other.
 """
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from tg_analyst.storage.records import GroupRecord, MessageRecord, UserRecord
+from tg_analyst.storage.records import (
+    GroupRecord,
+    MessageRecord,
+    ReactionRecord,
+    ReactionSummary,
+    UserRecord,
+)
 
 SYNTHETIC_GROUP_ID = -1001000000001
 
@@ -61,6 +68,7 @@ class SyntheticCommunity:
     users: list[UserRecord]
     messages: list[MessageRecord]
     roles: dict[int, str]  # user_id -> ground-truth role
+    reactions: list[ReactionSummary] = field(default_factory=list)
 
 
 def _hour_weights() -> list[float]:
@@ -262,7 +270,39 @@ def generate(days: int = 90, seed: int = 42, start: datetime | None = None) -> S
         users=[p.user for p in personas],
         messages=messages,
         roles={p.user.user_id: p.role for p in personas},
+        reactions=_reactions(messages, personas, feud_a, feud_b, seed),
     )
+
+
+def _reactions(
+    messages: list[MessageRecord],
+    personas: list[Persona],
+    feud_a: Persona,
+    feud_b: Persona,
+    seed: int,
+) -> list[ReactionSummary]:
+    # A separate random stream, so adding reactions leaves the messages unchanged.
+    rng = random.Random(seed + 1)
+    role = {p.user.user_id: p.role for p in personas}
+    fans = [p.user.user_id for p in personas if p.role in ("admin", "helper", "regular")]
+    rival = {feud_a.user.user_id: feud_b.user.user_id, feud_b.user.user_id: feud_a.user.user_id}
+    out = []
+    for m in messages:
+        if m.is_service or m.sender_id is None:
+            continue
+        reactors: list[ReactionRecord] = []
+        when = m.timestamp + timedelta(minutes=rng.uniform(1, 90))
+        if role.get(m.sender_id) in ("helper", "admin") and rng.random() < 0.35:
+            for uid in rng.sample([u for u in fans if u != m.sender_id], rng.randint(1, 3)):
+                reactors.append(ReactionRecord(uid, rng.choice(["👍", "❤️", "🔥"]), when))
+        elif m.sender_id in rival and rng.random() < 0.4:
+            reactors.append(ReactionRecord(rival[m.sender_id], rng.choice(["🤡", "👎"]), when))
+        elif rng.random() < 0.05:
+            reactors.append(ReactionRecord(rng.choice(fans), "👍", when))
+        reactors = [r for r in reactors if r.user_id != m.sender_id]
+        if reactors:
+            out.append(ReactionSummary(m.message_id, len(reactors), reactors))
+    return out
 
 
 def load(session, community: SyntheticCommunity) -> None:
@@ -279,5 +319,6 @@ def load(session, community: SyntheticCommunity) -> None:
     repo.advance_high_water_mark(
         session, community.group.group_id, max(m.message_id for m in community.messages)
     )
+    repo.store_reactions(session, community.group.group_id, community.reactions)
     repo.build_interactions(session, community.group.group_id)
     session.commit()

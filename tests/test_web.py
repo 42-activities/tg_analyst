@@ -67,6 +67,11 @@ def test_dashboard_with_data(db_url):
     assert len(at.chat_message) > 10
     assert any("hostile" in c.value for c in at.caption)
     assert any(sub.value == "Topic details" for sub in at.subheader)
+    reactions = next(m for m in at.metric if m.label == "Reactions")
+    assert int(reactions.value.replace(",", "")) > 100
+    # Replies and mentions only: the page still renders.
+    at.sidebar.toggle[1].set_value(False).run()
+    assert not at.exception, at.exception
 
 
 def test_jobs_page_queues_backfill(db_url):

@@ -116,7 +116,7 @@ async def test_reconcile_applies_deletions_and_edits(engine, chat, monkeypatch):
     tg = _FakeTelegram({1: "question", 3: "plain note (edited)"})  # message 2 deleted
     stats = await service.reconcile(tg, make_session_factory(engine), str(GID), days=30)
 
-    assert stats == {"checked": 3, "deleted": 1, "edited": 1}
+    assert stats == {"checked": 3, "deleted": 1, "edited": 1, "reactions_updated": 0}
     assert tg.calls == 2  # batches of 2
     chat.expire_all()
     assert chat.get(Message, (GID, 2)) is None

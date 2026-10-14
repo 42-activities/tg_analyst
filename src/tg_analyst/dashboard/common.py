@@ -36,8 +36,30 @@ def cached_messages(group_id: int, start: datetime, end: datetime) -> pd.DataFra
 
 
 @st.cache_data(ttl=60)
-def cached_edges(group_id: int, start: datetime, end: datetime) -> pd.DataFrame:
+def _all_edges(group_id: int, start: datetime, end: datetime) -> pd.DataFrame:
     return load.interactions(engine(), group_id, start, end)
+
+
+def cached_edges(
+    group_id: int, start: datetime, end: datetime, reactions: bool = True
+) -> pd.DataFrame:
+    """Interaction edges; ``reactions=False`` keeps only replies and mentions."""
+    edges = _all_edges(group_id, start, end)
+    return edges if reactions else edges[edges["type"] != "reaction"]
+
+
+@st.cache_data(ttl=60)
+def cached_reactions(group_id: int, start: datetime, end: datetime) -> pd.DataFrame:
+    return load.reactions(engine(), group_id, start, end)
+
+
+def reactions_toggle():
+    return st.toggle(
+        "Count reactions",
+        value=True,
+        help="Treat emoji reactions as interactions (reactor → author) in the network, "
+        "relationships, tone received and conflicts. Off: replies and mentions only.",
+    )
 
 
 def fmt_duration(seconds) -> str:
@@ -85,13 +107,15 @@ def cached_date_range(group_id: int):
 
 
 @st.cache_data(ttl=300, show_spinner="Analysing relationships…")
-def cached_relationships(group_id: int, start: datetime, end: datetime) -> dict:
+def cached_relationships(
+    group_id: int, start: datetime, end: datetime, reactions: bool = True
+) -> dict:
     """Graph metrics, roles, newcomer outcomes and conflicts for a group and period."""
     from tg_analyst.analytics import conflict, newcomers
     from tg_analyst.graph import network, roles
 
     msgs = cached_messages(group_id, start, end)
-    edges = cached_edges(group_id, start, end)
+    edges = cached_edges(group_id, start, end, reactions)
     graph = network.build_graph(edges)
     centrality = network.centrality(graph)
     feats = roles.member_features(msgs, centrality)
@@ -109,7 +133,9 @@ def cached_relationships(group_id: int, start: datetime, end: datetime) -> dict:
         "newcomers": outcomes,
         "newcomer_summary": newcomers.newcomer_summary(outcomes),
         "conflicts": conflict.detect_conflicts(edges),
-        "hostility_threshold": conflict.hostility_threshold(edges["sentiment_score"])
+        "hostility_threshold": conflict.hostility_threshold(
+            conflict.written(edges)["sentiment_score"]
+        )
         if "sentiment_score" in edges
         else -0.3,
         "pair_timeline": conflict.pair_tone_timeline(edges),

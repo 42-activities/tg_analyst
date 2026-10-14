@@ -17,9 +17,15 @@ from tg_analyst.storage.models import (
     Group,
     Interaction,
     Message,
+    Reaction,
     User,
 )
-from tg_analyst.storage.records import GroupRecord, MessageRecord, UserRecord
+from tg_analyst.storage.records import (
+    GroupRecord,
+    MessageRecord,
+    ReactionSummary,
+    UserRecord,
+)
 
 # Keeps multi-row statements well under PostgreSQL's 65,535 bound-parameter limit.
 _CHUNK_ROWS = 500
@@ -196,6 +202,12 @@ def build_interactions(session: Session, group_id: int, min_message_id: int = 0)
             for t in sorted(targets)
         )
 
+    edges.extend(_reaction_edges(session, group_id, Message.message_id >= min_message_id))
+    return inserted + _insert_edges(session, edges)
+
+
+def _insert_edges(session: Session, edges: list[dict]) -> int:
+    inserted = 0
     for chunk in _chunks(edges):
         stmt = (
             _insert(session, Interaction)
@@ -206,6 +218,122 @@ def build_interactions(session: Session, group_id: int, min_message_id: int = 0)
         )
         inserted += len(session.execute(stmt).all())
     return inserted
+
+
+def _reaction_edges(session: Session, group_id: int, *where) -> list[dict]:
+    """Reactor -> message author edges, one per (message, reactor) whatever the emoji."""
+    rows = session.execute(
+        select(
+            Reaction.message_id,
+            Reaction.user_id,
+            Message.sender_id,
+            func.min(func.coalesce(Reaction.timestamp, Message.timestamp)),
+        )
+        .join(
+            Message,
+            and_(Message.group_id == Reaction.group_id, Message.message_id == Reaction.message_id),
+        )
+        .where(
+            Reaction.group_id == group_id,
+            Message.sender_id.is_not(None),
+            Message.sender_id != Reaction.user_id,
+            *where,
+        )
+        .group_by(Reaction.message_id, Reaction.user_id, Message.sender_id)
+    ).all()
+    return [
+        {
+            "group_id": group_id,
+            "message_id": mid,
+            "source_user_id": reactor,
+            "target_user_id": author,
+            "type": "reaction",
+            "timestamp": ts,
+        }
+        for mid, reactor, author, ts in rows
+    ]
+
+
+def store_reactions(
+    session: Session,
+    group_id: int,
+    summaries: Sequence[ReactionSummary],
+    excluded: set[int] = frozenset(),
+) -> int:
+    """Store the reactions of stored messages and rebuild their reaction edges.
+
+    A complete reactor list replaces what is stored (people take reactions back); a
+    partial one only adds. Reactions by excluded members are dropped. Messages that are
+    not stored (e.g. from excluded senders) are ignored. Returns reaction rows written.
+    """
+    stored = set(
+        session.scalars(
+            select(Message.message_id).where(
+                Message.group_id == group_id,
+                Message.message_id.in_([s.message_id for s in summaries]),
+            )
+        )
+    )
+    summaries = [s for s in summaries if s.message_id in stored]
+    if not summaries:
+        return 0
+    ids = [s.message_id for s in summaries]
+    for s in summaries:
+        session.execute(
+            update(Message)
+            .where(Message.group_id == group_id, Message.message_id == s.message_id)
+            .values(reaction_count=s.total)
+        )
+    replaced = [s.message_id for s in summaries if s.complete]
+    if replaced:
+        session.execute(
+            delete(Reaction).where(Reaction.group_id == group_id, Reaction.message_id.in_(replaced))
+        )
+    rows = [
+        {
+            "group_id": group_id,
+            "message_id": s.message_id,
+            "user_id": r.user_id,
+            "emoji": r.emoji,
+            "timestamp": r.timestamp,
+        }
+        for s in summaries
+        for r in s.reactors
+        if r.user_id not in excluded
+    ]
+    for chunk in _chunks(rows):
+        session.execute(_insert(session, Reaction).values(chunk).on_conflict_do_nothing())
+    session.execute(
+        delete(Interaction).where(
+            Interaction.group_id == group_id,
+            Interaction.type == "reaction",
+            Interaction.message_id.in_(ids),
+        )
+    )
+    _insert_edges(session, _reaction_edges(session, group_id, Message.message_id.in_(ids)))
+    return len(rows)
+
+
+def reaction_state(session: Session, group_id: int, message_ids: Iterable[int]) -> dict:
+    """{message_id: (reaction_count, stored reaction rows)} for stored messages."""
+    ids = list(message_ids)
+    if not ids:
+        return {}
+    counts = dict(
+        session.execute(
+            select(Message.message_id, Message.reaction_count).where(
+                Message.group_id == group_id, Message.message_id.in_(ids)
+            )
+        ).all()
+    )
+    rows = dict(
+        session.execute(
+            select(Reaction.message_id, func.count())
+            .where(Reaction.group_id == group_id, Reaction.message_id.in_(ids))
+            .group_by(Reaction.message_id)
+        ).all()
+    )
+    return {mid: (count, rows.get(mid, 0)) for mid, count in counts.items()}
 
 
 _ENRICHMENT_FIELDS = (
@@ -252,8 +380,9 @@ def resolve_user(session: Session, ref: str) -> int:
 def exclude_user(session: Session, user_id: int, note: str | None = None) -> dict[str, int]:
     """Opt a member out: record the exclusion and delete everything stored about their messages.
 
-    Removes their messages (enrichment and edges cascade) and replies/mentions that
-    point at them. Ingestion skips excluded senders from then on. Returns row counts.
+    Removes their messages (enrichment and edges cascade), their reactions, and
+    replies/mentions/reactions that point at them. Ingestion skips excluded senders from
+    then on. Returns row counts.
     """
     session.execute(
         _insert(session, ExcludedUser)
@@ -266,7 +395,8 @@ def exclude_user(session: Session, user_id: int, note: str | None = None) -> dic
         )
     ).rowcount
     messages = session.execute(delete(Message).where(Message.sender_id == user_id)).rowcount
-    return {"messages": messages, "interactions": edges}
+    reactions = session.execute(delete(Reaction).where(Reaction.user_id == user_id)).rowcount
+    return {"messages": messages, "interactions": edges, "reactions": reactions}
 
 
 def include_user(session: Session, user_id: int) -> bool:

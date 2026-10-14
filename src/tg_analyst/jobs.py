@@ -179,7 +179,8 @@ def _run_exclude(factory: sessionmaker, params: dict) -> str:
         session.commit()
     return (
         f"Excluded {uid}: removed {removed['messages']} messages and "
-        f"{removed['interactions']} replies/mentions"
+        f"{removed['interactions']} replies/mentions/reactions and "
+        f"{removed['reactions']} of their reactions"
     )
 
 

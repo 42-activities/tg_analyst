@@ -1,7 +1,7 @@
 """Tone between pairs over time, and detection of conflict episodes. Pure functions.
 
-Input is the edge frame from ``analytics.load.interactions``: one row per reply/mention,
-carrying the sentiment of the message that created it.
+Input is the edge frame from ``analytics.load.interactions``: one row per reply, mention
+or reaction, carrying its tone (message sentiment, or the emoji's tone for reactions).
 """
 
 from datetime import timedelta
@@ -18,6 +18,11 @@ EPISODE_COLUMNS = [
     "mutual",
     "mean_tone",
 ]
+
+
+def written(edges: pd.DataFrame) -> pd.DataFrame:
+    """Only edges created by a written message (replies, mentions), not reactions."""
+    return edges[edges["type"] != "reaction"] if "type" in edges else edges
 
 
 def _with_pair(edges: pd.DataFrame) -> pd.DataFrame:
@@ -55,9 +60,10 @@ def detect_conflicts(
     were hostile to each other (a feud), False when it was one-sided (e.g. harassment).
 
     By default ``negative_below`` adapts to the group: the tone of its most negative 10%
-    of interactions, and never above -0.3. Chats differ hugely in how rough everyday
-    talk is; a fixed cut-off flags half of a casual chat while missing feuds in a polite
-    one.
+    of written interactions (reactions don't shift it), and never above -0.3. Hostile
+    reactions such as 🤡 or 👎 still count toward an episode. Chats differ hugely in how
+    rough everyday talk is; a fixed cut-off flags half of a casual chat while missing feuds
+    in a polite one.
 
     ``hostile_share`` is the fraction of *all* the pair's interactions during the episode
     that were negative. Friends who banter or swear a lot exchange many negative-scored
@@ -68,7 +74,7 @@ def detect_conflicts(
         return pd.DataFrame(columns=EPISODE_COLUMNS)
     e = _with_pair(edges)
     if negative_below is None:
-        negative_below = hostility_threshold(e["sentiment_score"])
+        negative_below = hostility_threshold(written(e)["sentiment_score"])
     neg = e[e["sentiment_score"] <= negative_below].sort_values("timestamp")
     episodes = []
     gap = timedelta(days=gap_days)
@@ -146,6 +152,7 @@ def episode_messages(
     """
     pad = timedelta(hours=pad_hours)
     pair = {user_a, user_b}
+    edges = written(edges)  # a reaction edge points at the *target's* message
     window = edges[
         edges["source_user_id"].isin(pair)
         & edges["target_user_id"].isin(pair)

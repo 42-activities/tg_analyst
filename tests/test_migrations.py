@@ -21,7 +21,9 @@ from tg_analyst.storage.models import Base, Message
 from tg_analyst.storage.records import GroupRecord, MessageRecord
 
 # Tables introduced by revisions after 0001_baseline.
-LATER_TABLES = {"excluded_users"}
+LATER_TABLES = {"excluded_users", "reactions"}
+# Columns that later revisions added to baseline-era tables.
+LATER_COLUMNS = {"messages": ["reaction_count"]}
 
 
 @pytest.fixture
@@ -66,6 +68,10 @@ def test_pre_migration_database_is_stamped_and_keeps_its_data(blank_engine):
     # no version table. Tables added by later revisions must not exist yet.
     baseline_tables = [t for t in Base.metadata.sorted_tables if t.name not in LATER_TABLES]
     Base.metadata.create_all(blank_engine, tables=baseline_tables)
+    with blank_engine.begin() as conn:
+        for table, columns in LATER_COLUMNS.items():
+            for column in columns:
+                conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
     with make_session_factory(blank_engine)() as s:
         repo.upsert_group(s, GroupRecord(-1, "g"))
         repo.upsert_messages(

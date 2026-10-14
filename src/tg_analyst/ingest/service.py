@@ -3,16 +3,25 @@
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy.orm import Session, sessionmaker
 from telethon import TelegramClient, events
+from telethon.errors import RPCError
 from telethon.tl import types
+from telethon.tl.functions.messages import GetMessageReactionsListRequest
 from telethon.utils import get_peer_id
 
-from tg_analyst.ingest.convert import group_to_record, message_to_record, sender_to_record
+from tg_analyst.ingest.convert import (
+    group_to_record,
+    message_to_record,
+    peer_reactions_to_records,
+    reactions_to_summary,
+    sender_to_record,
+)
 from tg_analyst.ingest.groupref import GroupRefError, candidate_ids, parse_group_ref
 from tg_analyst.storage import repository as repo
-from tg_analyst.storage.records import MessageRecord, UserRecord
+from tg_analyst.storage.records import MessageRecord, ReactionSummary, UserRecord
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +51,59 @@ def _persist(
         repo.advance_high_water_mark(session, group_id, highest)
     session.commit()
     return len(batch) - len(kept)
+
+
+REACTION_PAGE = 100
+
+
+async def _complete_reactions(
+    client: TelegramClient, entity, summaries: list[ReactionSummary]
+) -> list[tuple[UserRecord, datetime]]:
+    """Fetch the full reactor list where a message only carries its latest reactors.
+
+    Fills ``summaries`` in place; returns the reactors' user records (with names) to store.
+    One API call per page of 100 reactors; Telethon sleeps through flood waits.
+    """
+    users: list[tuple[UserRecord, datetime]] = []
+    for s in summaries:
+        if not s.visible or s.complete:
+            continue
+        reactors, offset = [], None
+        try:
+            while True:
+                page = await client(
+                    GetMessageReactionsListRequest(
+                        peer=entity, id=s.message_id, limit=REACTION_PAGE, offset=offset
+                    )
+                )
+                reactors.extend(peer_reactions_to_records(page.reactions))
+                seen_at = {r.user_id: r.timestamp for r in reactors}
+                users.extend(
+                    (rec, seen_at[rec.user_id])
+                    for rec in map(sender_to_record, page.users)
+                    if rec is not None and seen_at.get(rec.user_id) is not None
+                )
+                offset = page.next_offset
+                if not offset:
+                    break
+        except RPCError as exc:
+            # Keep the partial list from the message itself.
+            log.warning("Reaction list for message %s unavailable: %s", s.message_id, exc)
+            continue
+        s.reactors, s.listed = reactors, True
+    return users
+
+
+def _store_reactions(
+    session: Session,
+    group_id: int,
+    summaries: list[ReactionSummary],
+    users: list[tuple[UserRecord, datetime]],
+    excluded: set[int],
+) -> None:
+    repo.upsert_users(session, ((u, ts) for u, ts in users if u.user_id not in excluded))
+    repo.store_reactions(session, group_id, summaries, excluded)
+    session.commit()
 
 
 async def _find_entity(client: TelegramClient, group: str):
@@ -93,18 +155,33 @@ async def backfill(
         kwargs["offset_date"] = since
 
     skipped = 0
+    summaries: list[ReactionSummary] = []
+
+    async def flush() -> tuple[int, int]:
+        users = await _complete_reactions(
+            client, entity, [s for s in summaries if s.total and not s.complete]
+        )
+        dropped = _persist(session, group_id, batch, excluded=excluded)
+        _store_reactions(session, group_id, [s for s in summaries if s.total], users, excluded)
+        count = len(batch)
+        batch.clear()
+        summaries.clear()
+        return dropped, count
+
     with session_factory() as session:
         excluded = repo.excluded_ids(session)
         async for msg in client.iter_messages(entity, **kwargs):
             batch.append((message_to_record(msg, group_id), sender_to_record(msg.sender)))
+            summaries.append(reactions_to_summary(msg))
             if len(batch) >= BATCH_SIZE:
-                skipped += _persist(session, group_id, batch, excluded=excluded)
-                total += len(batch)
+                dropped, count = await flush()
+                skipped += dropped
+                total += count
                 log.info("Stored %d messages", total - skipped)
-                batch.clear()
         if batch:
-            skipped += _persist(session, group_id, batch, excluded=excluded)
-            total += len(batch)
+            dropped, count = await flush()
+            skipped += dropped
+            total += count
         if skipped:
             log.info("Skipped %d messages from excluded members", skipped)
         edges = repo.build_interactions(session, group_id, min_message_id=start_id + 1)
@@ -123,10 +200,13 @@ async def reconcile(
     group: str,
     days: int | None = 30,
 ) -> dict[str, int]:
-    """Re-check stored messages against Telegram: drop deleted ones, apply edits.
+    """Re-check stored messages against Telegram: drop deleted ones, apply edits, and
+    refresh reactions.
 
-    ``days=None`` re-checks the whole history. Telethon returns ``None`` (or an empty
-    message) for ids that no longer exist, which is how deletions are detected.
+    ``days=None`` re-checks the whole history (this is also how reactions are imported
+    for messages stored before reactions were collected). Telethon returns ``None`` (or an
+    empty message) for ids that no longer exist, which is how deletions are detected.
+    Reactions are refreshed when a message's reaction total changed since the last check.
     """
     entity, group_id = await resolve_group(client, session_factory, group)
     since = (
@@ -136,21 +216,34 @@ async def reconcile(
         ids = repo.stored_message_ids(session, group_id, since)
         excluded = repo.excluded_ids(session)
 
-    stats = {"checked": 0, "deleted": 0, "edited": 0}
+    stats = {"checked": 0, "deleted": 0, "edited": 0, "reactions_updated": 0}
     for start in range(0, len(ids), RECONCILE_BATCH):
         chunk = ids[start : start + RECONCILE_BATCH]
         found = await client.get_messages(entity, ids=chunk)
-        gone, edited = [], []
+        gone, edited, summaries = [], [], []
         for mid, msg in zip(chunk, found, strict=True):
             if msg is None or isinstance(msg, types.MessageEmpty):
                 gone.append(mid)
-            elif msg.sender_id not in excluded and getattr(msg, "action", None) is None:
+                continue
+            summaries.append(reactions_to_summary(msg))
+            if msg.sender_id not in excluded and getattr(msg, "action", None) is None:
                 edited.append(message_to_record(msg, group_id))
+        with session_factory() as session:
+            state = repo.reaction_state(session, group_id, [s.message_id for s in summaries])
+        changed = [
+            s
+            for s in summaries
+            # A message never checked before (count None) and without reactions is unchanged.
+            if s.message_id in state and (state[s.message_id][0] or 0) != s.total
+        ]
+        users = await _complete_reactions(client, entity, changed)
         with session_factory() as session:
             stats["deleted"] += repo.delete_messages(session, group_id, gone)
             stats["edited"] += repo.apply_edits(session, group_id, edited)
             session.commit()
+            _store_reactions(session, group_id, changed, users, excluded)
         stats["checked"] += len(chunk)
+        stats["reactions_updated"] += len(changed)
     log.info("Reconciled group %s: %s", group_id, stats)
     return stats
 
@@ -209,6 +302,18 @@ async def listen(client: TelegramClient, session_factory: sessionmaker, groups: 
         with session_factory() as session:
             repo.delete_messages(session, event.chat_id, event.deleted_ids)
             session.commit()
+
+    @client.on(events.Raw(types.UpdateMessageReactions))
+    async def _on_reactions(update):
+        gid = get_peer_id(update.peer)
+        if gid not in group_ids:
+            return
+        summary = reactions_to_summary(
+            SimpleNamespace(id=update.msg_id, reactions=update.reactions)
+        )
+        users = await _complete_reactions(client, group_ids[gid], [summary])
+        with session_factory() as session:
+            _store_reactions(session, gid, [summary], users, repo.excluded_ids(session))
 
     log.info("Listening to %d group(s); Ctrl+C to stop", len(group_ids))
     await client.run_until_disconnected()

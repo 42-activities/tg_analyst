@@ -5,7 +5,8 @@ from datetime import datetime
 import pandas as pd
 from sqlalchemy import Engine, and_, func, select
 
-from tg_analyst.storage.models import Enrichment, Group, Interaction, Message, User
+from tg_analyst.enrich.reactions import emoji_tone
+from tg_analyst.storage.models import Enrichment, Group, Interaction, Message, Reaction, User
 
 
 def groups(engine: Engine) -> pd.DataFrame:
@@ -50,7 +51,12 @@ def messages(engine: Engine, group_id: int, start: datetime, end: datetime) -> p
 
 
 def interactions(engine: Engine, group_id: int, start: datetime, end: datetime) -> pd.DataFrame:
-    """Interaction edges with the tone of the message that created them."""
+    """Interaction edges with their tone.
+
+    Replies and mentions carry the tone of the message that created them. A reaction edge's
+    ``message_id`` is the message reacted to, written by the *target*, so its tone comes
+    from the emoji instead (the mean if one member left several reactions).
+    """
     stmt = (
         select(
             Interaction.source_user_id,
@@ -72,6 +78,54 @@ def interactions(engine: Engine, group_id: int, start: datetime, end: datetime) 
             Interaction.timestamp >= start,
             Interaction.timestamp < end,
         )
+    )
+    edges = pd.read_sql(stmt, engine, parse_dates=["timestamp"])
+    if not (edges["type"] == "reaction").any():
+        return edges
+    emojis = pd.read_sql(
+        select(Reaction.message_id, Reaction.user_id.label("source_user_id"), Reaction.emoji)
+        .join(
+            Interaction,
+            and_(
+                Interaction.group_id == Reaction.group_id,
+                Interaction.message_id == Reaction.message_id,
+                Interaction.source_user_id == Reaction.user_id,
+                Interaction.type == "reaction",
+            ),
+        )
+        .where(
+            Reaction.group_id == group_id,
+            Interaction.timestamp >= start,
+            Interaction.timestamp < end,
+        ),
+        engine,
+    )
+    tone = (
+        emojis.assign(tone=emojis["emoji"].map(emoji_tone))
+        .groupby(["message_id", "source_user_id"])["tone"]
+        .mean()
+    )
+    is_reaction = edges["type"] == "reaction"
+    keys = pd.MultiIndex.from_frame(edges.loc[is_reaction, ["message_id", "source_user_id"]])
+    edges.loc[is_reaction, "sentiment_score"] = tone.reindex(keys).to_numpy()
+    return edges
+
+
+def reactions(engine: Engine, group_id: int, start: datetime, end: datetime) -> pd.DataFrame:
+    """Reactions to messages sent in [start, end): who reacted to whose message, with what."""
+    stmt = (
+        select(
+            Reaction.message_id,
+            Reaction.user_id,
+            Reaction.emoji,
+            Reaction.timestamp,
+            Message.sender_id.label("author_id"),
+        )
+        .join(
+            Message,
+            and_(Message.group_id == Reaction.group_id, Message.message_id == Reaction.message_id),
+        )
+        .where(Reaction.group_id == group_id, Message.timestamp >= start, Message.timestamp < end)
     )
     return pd.read_sql(stmt, engine, parse_dates=["timestamp"])
 

@@ -69,6 +69,9 @@ class Message(Base):
     is_service: Mapped[bool] = mapped_column(Boolean, default=False)
     service_action: Mapped[str | None] = mapped_column(String(32))
     action_user_ids: Mapped[list[int] | None] = mapped_column(JSON)
+    # Total reactions as Telegram reports them (paid stars excluded). Compared with the
+    # stored `reactions` rows to tell whether the reactor list is complete.
+    reaction_count: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (Index("ix_messages_group_reply", "group_id", "reply_to_msg_id"),)
 
@@ -100,6 +103,28 @@ class Interaction(Base):
             ["messages.group_id", "messages.message_id"],
             ondelete="CASCADE",
         ),
+    )
+
+
+class Reaction(Base):
+    """One member's emoji reaction to a message. Becomes a `reaction` interaction edge."""
+
+    __tablename__ = "reactions"
+
+    group_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    message_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    # The emoji itself, or "custom" for custom (premium) emoji.
+    emoji: Mapped[str] = mapped_column(String(32), primary_key=True)
+    timestamp: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["group_id", "message_id"],
+            ["messages.group_id", "messages.message_id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_reactions_user", "user_id"),
     )
 
 

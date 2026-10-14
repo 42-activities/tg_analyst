@@ -72,7 +72,7 @@ def test_exclude_purges_messages_and_edges(chat):
     removed = repo.exclude_user(chat, ME, "my own account")
     chat.commit()
 
-    assert removed == {"messages": 2, "interactions": 3}
+    assert removed == {"messages": 2, "interactions": 3, "reactions": 0}
     assert count(chat, Message, Message.sender_id == ME) == 0
     assert count(chat, Enrichment) == 3  # cascaded with my two messages
     remaining = chat.execute(select(Interaction.source_user_id, Interaction.target_user_id)).all()
@@ -82,7 +82,11 @@ def test_exclude_purges_messages_and_edges(chat):
 
 def test_exclude_is_idempotent_and_include_lifts_it(chat):
     repo.exclude_user(chat, ME)
-    assert repo.exclude_user(chat, ME, "again") == {"messages": 0, "interactions": 0}
+    assert repo.exclude_user(chat, ME, "again") == {
+        "messages": 0,
+        "interactions": 0,
+        "reactions": 0,
+    }
     assert repo.excluded_ids(chat) == {ME}
     assert repo.include_user(chat, ME) is True
     assert repo.include_user(chat, ME) is False

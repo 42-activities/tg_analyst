@@ -17,14 +17,17 @@ from tg_analyst.dashboard.common import (
     cached_edges,
     cached_groups,
     cached_messages,
+    cached_reactions,
     cached_relationships,
     cached_terms,
     escape_md,
     fmt,
     fmt_duration,
+    reactions_toggle,
     show_text,
     tone_style,
 )
+from tg_analyst.enrich.reactions import emoji_tone
 from tg_analyst.graph import network
 from tg_analyst.graph.roles import ROLE_DESCRIPTIONS, ROLE_ORDER
 
@@ -47,6 +50,7 @@ def dashboard_page() -> None:
         )
         period = st.date_input("Period", value=default, help="Defaults to all data for the group")
         hide_names = st.toggle("Pseudonymize members", help="For screenshots and sharing")
+        with_reactions = reactions_toggle()
         if st.button("Refresh data"):
             st.cache_data.clear()
 
@@ -55,7 +59,8 @@ def dashboard_page() -> None:
     start = datetime.combine(period[0], datetime.min.time())
     end = datetime.combine(period[1] + timedelta(days=1), datetime.min.time())
     msgs = cached_messages(group_id, start, end)
-    edges = cached_edges(group_id, start, end)
+    edges = cached_edges(group_id, start, end, with_reactions)
+    reactions = cached_reactions(group_id, start, end)
 
     st.title(labels[group_id])
     if msgs.empty:
@@ -66,11 +71,11 @@ def dashboard_page() -> None:
     if hide_names:
         names = metrics.pseudonym_map(names)
 
-    _kpi_row(msgs)
+    _kpi_row(msgs, reactions)
     if msgs["sentiment_score"].isna().all():
         st.warning("Messages are not scored yet. Run sentiment analysis on the **Jobs** page.")
 
-    rel = cached_relationships(group_id, start, end)
+    rel = cached_relationships(group_id, start, end, with_reactions)
     tabs = st.tabs(
         [
             "Activity & mood",
@@ -83,7 +88,7 @@ def dashboard_page() -> None:
         ]
     )
     with tabs[0]:
-        _activity_tab(msgs)
+        _activity_tab(msgs, reactions)
     with tabs[1]:
         _members_tab(msgs, edges, names, rel)
     with tabs[2]:
@@ -101,7 +106,7 @@ def dashboard_page() -> None:
         _messages_tab(msgs, names, hide_names)
 
 
-def _kpi_row(msgs: pd.DataFrame) -> None:
+def _kpi_row(msgs: pd.DataFrame, reactions: pd.DataFrame) -> None:
     k = metrics.kpis(msgs)
     cols = st.columns(6)
     cols[0].metric("Messages", f"{k['messages']:,}")
@@ -125,9 +130,14 @@ def _kpi_row(msgs: pd.DataFrame) -> None:
         fmt(k["media_share"], "{:.0%}"),
         help="Share of messages with photos, video, stickers…",
     )
+    cols[4].metric(
+        "Reactions",
+        f"{len(reactions):,}",
+        help="Emoji reactions to messages from this period (who reacted is stored)",
+    )
 
 
-def _activity_tab(msgs: pd.DataFrame) -> None:
+def _activity_tab(msgs: pd.DataFrame, reactions: pd.DataFrame) -> None:
     daily = metrics.daily_activity(msgs)
     fig = go.Figure()
     fig.add_bar(x=daily["date"], y=daily["messages"], name="Messages", marker_color="#9db4d3")
@@ -183,6 +193,22 @@ def _activity_tab(msgs: pd.DataFrame) -> None:
         ).update_layout(height=320),
         use_container_width=True,
     )
+    if not reactions.empty:
+        top = reactions["emoji"].value_counts().head(15).rename_axis("emoji").reset_index()
+        top["tone"] = top["emoji"].map(emoji_tone)
+        st.plotly_chart(
+            px.bar(
+                top,
+                x="emoji",
+                y="count",
+                color="tone",
+                range_color=[-1, 1],
+                color_continuous_scale=TONE_SCALE,
+                title="Most used reactions (colour: the tone counted for each)",
+                labels={"count": "Reactions", "emoji": "", "tone": "Tone"},
+            ).update_layout(height=300),
+            use_container_width=True,
+        )
 
 
 def _members_tab(msgs: pd.DataFrame, edges: pd.DataFrame, names: dict, rel: dict) -> None:

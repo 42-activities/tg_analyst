@@ -40,3 +40,30 @@ class MessageRecord:
     is_service: bool = False
     service_action: str | None = None
     action_user_ids: list[int] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ReactionRecord:
+    user_id: int
+    emoji: str  # the emoji, or "custom"
+    timestamp: datetime | None = None  # naive UTC
+
+
+@dataclass(slots=True)
+class ReactionSummary:
+    """The reactions of one message as Telegram reports them.
+
+    ``reactors`` may be partial: a message only carries its few most recent reactors.
+    ``complete`` says whether they cover ``total``; ``visible`` is False when the group
+    hides who reacted, in which case only the total is known.
+    """
+
+    message_id: int
+    total: int
+    reactors: list[ReactionRecord] = field(default_factory=list)
+    visible: bool = True
+    listed: bool = False  # reactors come from the full reaction list, not the summary
+
+    @property
+    def complete(self) -> bool:
+        return self.visible and (self.listed or len(self.reactors) >= self.total)

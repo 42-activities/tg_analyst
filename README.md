@@ -6,7 +6,7 @@ Telegram groups host tech communities, customer support and local and profession
 
 > **Focus:** the sentiment analysis here is about **user relationships and community dynamics**: member-to-member tone, how members treat newcomers, how admins and members interact, and whether conflict is rising. It does not measure market or crypto sentiment.
 
-> **Status:** in production at <https://tg-analyst.naurzalinov.me> (password-protected). Ingestion, Russian-capable sentiment, relationship analytics and the dashboard all work. Next up: reactions and toxicity, then "ask the chat" (RAG). See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status:** in production at <https://tg-analyst.naurzalinov.me> (password-protected). Ingestion, Russian-capable sentiment, relationship analytics and the dashboard all work. Next up: toxicity, then "ask the chat" (RAG). See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -41,7 +41,8 @@ Telegram groups host tech communities, customer support and local and profession
 
 - **`groups`**: `group_id`, `title`, `username`, `member_count`
 - **`users`**: `user_id`, `username`, `display_name`, `is_bot`, `first_seen`, `last_seen`
-- **`messages`**: `message_id`, `group_id`, `sender_id`, `timestamp`, `text`, `reply_to_msg_id`, `thread_id`, `views`, `forwards`, `has_media`, `media_type`
+- **`messages`**: `message_id`, `group_id`, `sender_id`, `timestamp`, `text`, `reply_to_msg_id`, `thread_id`, `views`, `forwards`, `has_media`, `media_type`, `reaction_count`
+- **`reactions`**: `message_id`, `user_id` (who reacted), `emoji` (or `custom`), `timestamp`. Deleted with their message.
 - **`interactions`**: `source_user_id`, `target_user_id`, `message_id`, `type` (`reply` | `mention` | `reaction` | `forward`), `timestamp`
 - **`enrichment`**: `message_id`, `sentiment_score`, `sentiment_label`, `toxicity`, `intent`, `topics`, `model_version`
 - **`jobs`**: work queued from the web UI (`backfill`, `enrich`, `build_edges`, `seed`) and run by the worker
@@ -87,10 +88,13 @@ Search by text, tone and message type. With pseudonymization on, @usernames in t
 Everything about one person, reachable from the sidebar or as `/member?user=<id>`: role, activity and tone over time, when they write, who they talk to (with tone sent and received), the topics they raise more than the group does, their conflict episodes and recent messages.
 
 ### ⏳ Planned
-Reactions as interactions, toxicity scores, and model-based topics (BERTopic) if the keyword topics fall short. Later: "ask the chat" (RAG) over the group's Q&A, see M6 in the roadmap.
+Toxicity scores, and model-based topics (BERTopic) if the keyword topics fall short. Later: "ask the chat" (RAG) over the group's Q&A, see M6 in the roadmap.
+
+### Reactions
+Every emoji reaction becomes an interaction edge from the reactor to the message's author. Its tone comes from the emoji, not from the author's text: 👍/🔥 are approval, ❤️ is warm, 👎 is negative, 🤡/💩 are hostile, and others such as 🤯, 😭 or custom emoji are neutral (`enrich/reactions.py`). In the real group, reactions outnumber replies about three to one, and they bring members who only react into the network. The sidebar toggle **Count reactions** switches every view between "all interactions" and "replies and mentions only". The group's hostility threshold for conflicts is always computed from written messages, so a flood of 👍 doesn't move it, but hostile reactions still count toward a conflict episode. Telegram only says *who* reacted in groups that allow it; elsewhere only totals are stored.
 
 ### Staying in sync with Telegram
-The worker keeps every scraped group up to date on its own. It fetches new messages and scores them every `AUTO_REFRESH_MINUTES` (default 60). Every `AUTO_RECONCILE_HOURS` (default 24) it re-checks the last `RECONCILE_DAYS` (default 30) of stored messages: messages deleted in Telegram are deleted here too, and edited ones are updated and re-scored. A full-history re-check can be started from the Jobs page.
+The worker keeps every scraped group up to date on its own. It fetches new messages and scores them every `AUTO_REFRESH_MINUTES` (default 60). Every `AUTO_RECONCILE_HOURS` (default 24) it re-checks the last `RECONCILE_DAYS` (default 30) of stored messages: messages deleted in Telegram are deleted here too, and edited ones are updated and re-scored. Reactions are refreshed when a message's reaction total has changed. When a message carries only its latest reactors, one extra API call fetches the full list. A full-history re-check can be started from the Jobs page. It also imports reactions for messages stored before reactions were collected (in the real group: about 2 minutes per 1,000 messages).
 
 ---
 

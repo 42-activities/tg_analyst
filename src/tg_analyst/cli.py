@@ -168,10 +168,11 @@ def cmd_exclude(args) -> None:
         removed = repo.exclude_user(session, uid, args.note)
         session.commit()
     log.info(
-        "Excluded %s: removed %d messages and %d replies/mentions",
+        "Excluded %s: removed %d messages, %d replies/mentions/reactions and %d reactions",
         uid,
         removed["messages"],
         removed["interactions"],
+        removed["reactions"],
     )
 
 

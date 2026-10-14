@@ -60,7 +60,7 @@ Goal: a Streamlit app over M3.
 - [x] Alembic migrations (replacing `create_all`); production stamped at `0001_baseline`
 - [x] PostgreSQL deployment profile (docker-compose)
 - [x] Privacy opt-out: excluded members are purged and skipped by ingestion (`0002_excluded_users`)
-- [ ] Reaction edges (`GetMessageReactionsList`, available only in some groups)
+- [x] Reaction edges: `reactions` table (`0003_reactions`), emoji tone, back-fill/reconcile/listener, full list via `GetMessageReactionsList` when the summary is partial, "Count reactions" toggle, reaction KPI and emoji chart
 - [x] Topic extraction, keyword version: stemmed keywords, tone vs. group, trending, per-topic drill-down, member topics (Topics tab, member page)
 - [ ] Model-based topics (BERTopic or embedding clusters), only if keywords fall short. Could share embeddings with M6.
 - [x] Docker image; arm64 auto-deploy on push to `main` with rollback

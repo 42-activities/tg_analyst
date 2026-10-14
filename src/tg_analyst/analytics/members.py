@@ -2,6 +2,7 @@
 
 import pandas as pd
 
+from tg_analyst.analytics.conflict import written
 from tg_analyst.analytics.metrics import human_messages
 
 
@@ -13,6 +14,7 @@ def member_summary(msgs: pd.DataFrame, edges: pd.DataFrame, user_id: int) -> dic
         return {}
     out_edges = edges[edges["source_user_id"] == user_id]
     in_edges = edges[edges["target_user_id"] == user_id]
+    talk_out, talk_in = written(out_edges), written(in_edges)
     replies_to_them = human[
         human["reply_to_msg_id"].isin(own["message_id"]) & (human["sender_id"] != user_id)
     ]
@@ -28,8 +30,10 @@ def member_summary(msgs: pd.DataFrame, edges: pd.DataFrame, user_id: int) -> dic
         "negative_share": _share(own["sentiment_label"], "negative"),
         "questions": int((own["intent"] == "question").sum()),
         "thanks": int((own["intent"] == "thanks").sum()),
-        "talks_to": int(out_edges["target_user_id"].nunique()),
-        "addressed_by": int(in_edges["source_user_id"].nunique()),
+        "talks_to": int(talk_out["target_user_id"].nunique()),
+        "addressed_by": int(talk_in["source_user_id"].nunique()),
+        "reactions_given": len(out_edges) - len(talk_out),
+        "reactions_received": len(in_edges) - len(talk_in),
         "messages_answered": round(answered / len(own), 3),
     }
 
