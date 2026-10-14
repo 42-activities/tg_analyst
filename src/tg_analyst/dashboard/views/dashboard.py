@@ -130,6 +130,13 @@ def _kpi_row(msgs: pd.DataFrame, reactions: pd.DataFrame) -> None:
         fmt(k["media_share"], "{:.0%}"),
         help="Share of messages with photos, video, stickers…",
     )
+    cols[5].metric(
+        "Insults",
+        fmt(k["insult_share"], "{:.1%}"),
+        help="Share of messages the toxicity model flags as insults "
+        f"(swearing: {fmt(k['swearing_share'], '{:.1%}')}). "
+        "Negative tone is not the same thing: most negative messages are complaints.",
+    )
     cols[4].metric(
         "Reactions",
         f"{len(reactions):,}",
@@ -243,6 +250,8 @@ def _members_tab(msgs: pd.DataFrame, edges: pd.DataFrame, names: dict, rel: dict
                     "interactions_received",
                     "tone_given",
                     "tone_received",
+                    "insults_sent",
+                    "insults_received",
                     "questions",
                     "first_seen",
                     "last_seen",
@@ -260,6 +269,12 @@ def _members_tab(msgs: pd.DataFrame, edges: pd.DataFrame, names: dict, rel: dict
             "interactions_received": "Replies/mentions received",
             "tone_given": st.column_config.NumberColumn("Tone given", format="%+.2f"),
             "tone_received": st.column_config.NumberColumn("Tone received", format="%+.2f"),
+            "insults_sent": st.column_config.NumberColumn(
+                "Insults sent", help="Their messages flagged as insults"
+            ),
+            "insults_received": st.column_config.NumberColumn(
+                "Insults received", help="Insulting replies and mentions directed at them"
+            ),
             "questions": "Questions asked",
             "first_seen": "First message",
             "last_seen": "Last message",
@@ -320,11 +335,12 @@ def _relationships_tab(
         st.success("No bursts of hostile exchanges between the same two members.")
     else:
         st.caption(
-            "Three or more hostile replies/mentions between the same two members, at most a week "
-            f"apart, where hostility dominated their exchange. Hostile = tone ≤ "
-            f"{rel['hostility_threshold']:+.2f} (this group's most negative 10%). **Mutual** = "
-            "both sides hostile (a feud); otherwise one-sided. **Click a row to read the "
-            "messages.**"
+            "Three or more hostile interactions between the same two members, at most a week "
+            "apart, where hostility dominated their exchange. Hostile = an insult or threat, "
+            f"or tone ≤ {rel['hostility_threshold']:+.2f} (this group's most negative 10%) "
+            "unless it is just swearing; 🤡/👎 reactions count too when reactions are on. "
+            "**Mutual** = both sides hostile (a feud); otherwise one-sided. **Click a row to "
+            "read the messages.**"
         )
         view = episodes.assign(
             member_a=episodes["user_a"].map(names), member_b=episodes["user_b"].map(names)
@@ -337,6 +353,7 @@ def _relationships_tab(
                     "start",
                     "end",
                     "negative_interactions",
+                    "insults",
                     "mutual",
                     "mean_tone",
                 ]
@@ -352,6 +369,7 @@ def _relationships_tab(
                 "start": "From",
                 "end": "To",
                 "negative_interactions": "Hostile messages",
+                "insults": "Insults/threats",
                 "mutual": "Mutual",
                 "mean_tone": st.column_config.NumberColumn("Tone", format="%+.2f"),
             },
@@ -429,6 +447,8 @@ def _episode_transcript(
                     meta.append(f"tone {row.sentiment_score:+.2f}")
                 if row.hostile:
                     meta.append("🔴 hostile")
+                if row.toxic:
+                    meta.append(f"⚠️ {row.toxic}")
                 if row.kind == "context":
                     meta.append("_context: the message being replied to_")
                 st.caption(" · ".join(meta))
@@ -732,16 +752,20 @@ def _topics_tab(msgs: pd.DataFrame, terms: pd.DataFrame, names: dict, hide_names
 
 def _messages_tab(msgs: pd.DataFrame, names: dict, hide_names: bool = False) -> None:
     human = metrics.human_messages(msgs).copy()
-    c1, c2, c3 = st.columns([2, 1, 1])
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
     query = c1.text_input("Search text")
     label = c2.multiselect("Tone", ["positive", "neutral", "negative"])
     intent = c3.multiselect("Type", ["question", "thanks", "greeting", "complaint"])
+    toxic = c4.multiselect("Toxic", ["insult", "threat", "swearing"])
+    human["toxic"] = conflict.toxic_labels(human)
     if query:
         human = human[human["text"].fillna("").str.contains(query, case=False, regex=False)]
     if label:
         human = human[human["sentiment_label"].isin(label)]
     if intent:
         human = human[human["intent"].isin(intent)]
+    if toxic:
+        human = human[human["toxic"].map(lambda t: any(x in t.split(", ") for x in toxic))]
     human["member"] = human["sender_id"].map(names)
     if hide_names:
         human["text"] = human["text"].map(
@@ -749,7 +773,9 @@ def _messages_tab(msgs: pd.DataFrame, names: dict, hide_names: bool = False) -> 
         )
     st.caption(f"{len(human):,} messages")
     st.dataframe(
-        human[["timestamp", "member", "text", "sentiment_score", "sentiment_label", "intent"]]
+        human[
+            ["timestamp", "member", "text", "sentiment_score", "sentiment_label", "intent", "toxic"]
+        ]
         .sort_values("timestamp", ascending=False)
         .head(1000),
         hide_index=True,

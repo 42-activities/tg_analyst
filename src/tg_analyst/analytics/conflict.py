@@ -8,6 +8,8 @@ from datetime import timedelta
 
 import pandas as pd
 
+from tg_analyst.enrich.toxicity import TOXIC_AT
+
 EPISODE_COLUMNS = [
     "user_a",
     "user_b",
@@ -17,12 +19,47 @@ EPISODE_COLUMNS = [
     "hostile_share",
     "mutual",
     "mean_tone",
+    "insults",
 ]
 
 
 def written(edges: pd.DataFrame) -> pd.DataFrame:
     """Only edges created by a written message (replies, mentions), not reactions."""
     return edges[edges["type"] != "reaction"] if "type" in edges else edges
+
+
+def flag(frame: pd.DataFrame, column: str) -> pd.Series:
+    """True where a toxicity probability column is at or above TOXIC_AT."""
+    if column not in frame:
+        return pd.Series(False, index=frame.index)
+    return frame[column].fillna(0) >= TOXIC_AT
+
+
+def hostile_mask(frame: pd.DataFrame, negative_below: float) -> pd.Series:
+    """Which messages or edges are hostile.
+
+    An insult or a threat is always hostile. Otherwise a tone at or below
+    ``negative_below`` is, unless the message is just swearing (obscene but no insult or
+    threat): friends swear at each other all the time. Without toxicity scores (VADER, or
+    not scored yet) this is tone alone.
+    """
+    insult_or_threat = flag(frame, "insult") | flag(frame, "threat")
+    swearing_only = flag(frame, "obscenity") & ~insult_or_threat
+    return insult_or_threat | ((frame["sentiment_score"] <= negative_below) & ~swearing_only)
+
+
+def toxic_labels(frame: pd.DataFrame) -> pd.Series:
+    """Labels such as "insult, swearing" per row ("" if clean or not scored)."""
+    flags = pd.DataFrame(
+        {
+            "insult": flag(frame, "insult"),
+            "threat": flag(frame, "threat"),
+            "swearing": flag(frame, "obscenity"),
+        }
+    )
+    if flags.empty:
+        return pd.Series("", index=frame.index, dtype=object)
+    return flags.apply(lambda row: ", ".join(row.index[row.to_numpy()]), axis=1)
 
 
 def _with_pair(edges: pd.DataFrame) -> pd.DataFrame:
@@ -54,7 +91,8 @@ def detect_conflicts(
 ) -> pd.DataFrame:
     """Find bursts of hostile exchanges between the same two members.
 
-    Hostile interactions (tone at or below ``negative_below``) between a pair are chained
+    Hostile interactions (see ``hostile_mask``: insults, threats, and tone at or below
+    ``negative_below`` that isn't just swearing) between a pair are chained
     while consecutive ones are at most ``gap_days`` apart; a chain with at least
     ``min_negative`` interactions is an episode. ``mutual`` is True when both members
     were hostile to each other (a feud), False when it was one-sided (e.g. harassment).
@@ -75,7 +113,7 @@ def detect_conflicts(
     e = _with_pair(edges)
     if negative_below is None:
         negative_below = hostility_threshold(written(e)["sentiment_score"])
-    neg = e[e["sentiment_score"] <= negative_below].sort_values("timestamp")
+    neg = e[hostile_mask(e, negative_below)].sort_values("timestamp")
     episodes = []
     gap = timedelta(days=gap_days)
     pair_all = {k: g["timestamp"] for k, g in e.groupby(["user_a", "user_b"])}
@@ -100,6 +138,7 @@ def detect_conflicts(
                     "hostile_share": round(share, 3),
                     "mutual": chain["source_user_id"].nunique() == 2,
                     "mean_tone": float(chain["sentiment_score"].mean()),
+                    "insults": int((flag(chain, "insult") | flag(chain, "threat")).sum()),
                 }
             )
     if not episodes:
@@ -128,6 +167,7 @@ TRANSCRIPT_COLUMNS = [
     "reply_to_msg_id",
     "kind",
     "hostile",
+    "toxic",
 ]
 
 
@@ -164,9 +204,11 @@ def episode_messages(
     if not ids:
         return pd.DataFrame(columns=TRANSCRIPT_COLUMNS)
     cols = ["message_id", "timestamp", "sender_id", "text", "sentiment_score", "reply_to_msg_id"]
+    cols += [c for c in ("insult", "obscenity", "threat") if c in msgs]
     exchange = msgs[msgs["message_id"].isin(ids)][cols].assign(kind="exchange")
     parent_ids = set(exchange["reply_to_msg_id"].dropna().astype(int)) - ids
     context = msgs[msgs["message_id"].isin(parent_ids)][cols].assign(kind="context")
     out = pd.concat([exchange, context], ignore_index=True).sort_values("timestamp")
-    out["hostile"] = (out["kind"] == "exchange") & (out["sentiment_score"] <= negative_below)
+    out["hostile"] = (out["kind"] == "exchange") & hostile_mask(out, negative_below)
+    out["toxic"] = toxic_labels(out)
     return out.head(limit).reset_index(drop=True)[TRANSCRIPT_COLUMNS]

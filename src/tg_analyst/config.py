@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     # "vader" (English, fast, default) or "hf" (multilingual transformer; needs the hf extra).
     sentiment_backend: str = "vader"
     hf_sentiment_model: str = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
+    # Insult/obscenity/threat model, run with the "hf" sentiment backend ("" disables).
+    hf_toxicity_model: str = "cointegrated/rubert-tiny-toxicity"
 
     # Worker schedules (0 disables): incremental back-fill + enrichment of every group, and
     # re-checking the last RECONCILE_DAYS against Telegram for edits and deletions.

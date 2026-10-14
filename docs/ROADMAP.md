@@ -25,7 +25,7 @@ Goal: every message has a tone, an intent and a model version.
 - [x] Multilingual HuggingFace backend (`cardiffnlp/twitter-xlm-roberta-base-sentiment`), `hf` extra. Verified on RU, KK and EN.
 - [x] Production uses the small Russian model `cointegrated/rubert-tiny-sentiment-balanced`: 18× faster than XLM-R and 72% label agreement with it on real chat data. The image ships `hf` by default.
 - [x] Intent heuristics (EN and RU): question, thanks, greeting, complaint
-- [ ] Toxicity score (Detoxify or a HuggingFace model, optional). Moved to M5.
+- [x] Toxicity: insult/obscenity/threat with `cointegrated/rubert-tiny-toxicity` (see M5)
 - [x] `tg-analyst enrich` that processes only rows missing or carrying a stale `model_version`
 
 ## M2.5 — Web UI (pulled forward)
@@ -60,6 +60,7 @@ Goal: a Streamlit app over M3.
 - [x] Alembic migrations (replacing `create_all`); production stamped at `0001_baseline`
 - [x] PostgreSQL deployment profile (docker-compose)
 - [x] Privacy opt-out: excluded members are purged and skipped by ingestion (`0002_excluded_users`)
+- [x] Toxicity scores (`0004_toxicity_labels`): insults and threats count as hostile, swearing alone doesn't; insult KPI, member columns, toxicity filter, labels in conflict transcripts
 - [x] Reaction edges: `reactions` table (`0003_reactions`), emoji tone, back-fill/reconcile/listener, full list via `GetMessageReactionsList` when the summary is partial, "Count reactions" toggle, reaction KPI and emoji chart
 - [x] Topic extraction, keyword version: stemmed keywords, tone vs. group, trending, per-topic drill-down, member topics (Topics tab, member page)
 - [ ] Model-based topics (BERTopic or embedding clusters), only if keywords fall short. Could share embeddings with M6.

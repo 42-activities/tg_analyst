@@ -136,14 +136,13 @@ def _run_sync(factory: sessionmaker, params: dict) -> str:
 def _run_enrich(factory: sessionmaker, params: dict) -> str:
     from tg_analyst.config import get_settings
     from tg_analyst.enrich.pipeline import enrich
-    from tg_analyst.enrich.sentiment import get_backend
+    from tg_analyst.enrich.toxicity import backends
 
-    settings = get_settings()
-    name = params.get("backend") or settings.sentiment_backend
-    kwargs = {"model": settings.hf_sentiment_model} if name == "hf" else {}
+    sentiment, toxicity = backends(get_settings(), params.get("backend"))
     with factory() as session:
-        stats = enrich(session, get_backend(name, **kwargs), group_id=params.get("group_id"))
-    return f"Scored {stats.scored} messages ({stats.skipped} without text) with {name}"
+        stats = enrich(session, sentiment, group_id=params.get("group_id"), toxicity=toxicity)
+    models = sentiment.version + (f" + {toxicity.version}" if toxicity else "")
+    return f"Scored {stats.scored} messages ({stats.skipped} without text) with {models}"
 
 
 def _run_build_edges(factory: sessionmaker, params: dict) -> str:

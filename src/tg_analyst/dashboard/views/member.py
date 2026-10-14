@@ -102,11 +102,18 @@ def member_page() -> None:
         help="Share of their messages that got a reply from someone else",
     )
 
+    extra = []
     if summary["reactions_given"] or summary["reactions_received"]:
-        st.caption(
-            f"Reactions: gave {summary['reactions_given']:,} · "
-            f"received {summary['reactions_received']:,} (one per message and person)"
+        extra.append(
+            f"Reactions: gave {summary['reactions_given']:,}, "
+            f"received {summary['reactions_received']:,}"
         )
+    if summary["insults_sent"] or summary["insults_received"]:
+        extra.append(
+            f"Insults: sent {summary['insults_sent']:,}, received {summary['insults_received']:,}"
+        )
+    if extra:
+        st.caption(" · ".join(extra))
     _activity(msgs, user_id)
     _partners(edges, user_id, names)
     terms = cached_terms(group_id, start, end)

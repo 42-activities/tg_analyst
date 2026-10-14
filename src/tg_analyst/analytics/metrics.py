@@ -6,6 +6,8 @@ excluded from member metrics; service joins are used for newcomer counts.
 
 import pandas as pd
 
+from tg_analyst.enrich.toxicity import TOXIC_AT
+
 
 def human_messages(msgs: pd.DataFrame) -> pd.DataFrame:
     return msgs[~msgs["is_service"] & ~msgs["is_bot"] & msgs["sender_id"].notna()]
@@ -25,6 +27,8 @@ def kpis(msgs: pd.DataFrame) -> dict[str, float | int | None]:
             "avg_wau": 0.0,
             "media_share": None,
             "median_first_reply_seconds": None,
+            "insult_share": None,
+            "swearing_share": None,
         }
     daily_active = human.groupby(human["timestamp"].dt.date)["sender_id"].nunique()
     weekly_active = human.groupby(human["timestamp"].dt.to_period("W"))["sender_id"].nunique()
@@ -43,7 +47,17 @@ def kpis(msgs: pd.DataFrame) -> dict[str, float | int | None]:
         "avg_wau": round(float(weekly_active.mean()), 1),
         "media_share": round(float(human["has_media"].astype(bool).mean()), 3),
         "median_first_reply_seconds": median_first_reply_seconds(human),
+        "insult_share": _toxic_share(human, "insult"),
+        "swearing_share": _toxic_share(human, "obscenity"),
     }
+
+
+def _toxic_share(human: pd.DataFrame, column: str) -> float | None:
+    """Share of toxicity-scored messages flagged for ``column`` (None if none scored)."""
+    if column not in human:
+        return None
+    scored = human[column].dropna()
+    return round(float((scored >= TOXIC_AT).mean()), 4) if not scored.empty else None
 
 
 def median_first_reply_seconds(human: pd.DataFrame) -> float | None:
@@ -100,8 +114,13 @@ def member_stats(msgs: pd.DataFrame, edges: pd.DataFrame) -> pd.DataFrame:
     human = human_messages(msgs)
     if human.empty:
         return pd.DataFrame()
+    if "insult" in human:
+        human = human.assign(is_insult=human["insult"].fillna(0) >= TOXIC_AT)
+    else:
+        human = human.assign(is_insult=False)
     stats = human.groupby("sender_id").agg(
         name=("name", "first"),
+        insults_sent=("is_insult", "sum"),
         messages=("message_id", "size"),
         tone_given=("sentiment_score", "mean"),
         questions=("intent", lambda s: int((s == "question").sum())),
@@ -109,15 +128,19 @@ def member_stats(msgs: pd.DataFrame, edges: pd.DataFrame) -> pd.DataFrame:
         last_seen=("timestamp", "max"),
     )
     if not edges.empty:
-        incoming = edges.groupby("target_user_id").agg(
+        e = edges.assign(
+            is_insult=edges["insult"].fillna(0) >= TOXIC_AT if "insult" in edges else False
+        )
+        incoming = e.groupby("target_user_id").agg(
             interactions_received=("message_id", "size"),
             tone_received=("sentiment_score", "mean"),
+            insults_received=("is_insult", "sum"),
         )
         outgoing = edges.groupby("source_user_id").agg(
             people_reached=("target_user_id", "nunique"),
         )
         stats = stats.join(incoming).join(outgoing)
-    for col in ("interactions_received", "people_reached"):
+    for col in ("interactions_received", "people_reached", "insults_sent", "insults_received"):
         if col not in stats:
             stats[col] = 0
         stats[col] = stats[col].fillna(0).astype(int)

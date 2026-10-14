@@ -102,15 +102,17 @@ def cmd_build_edges(args) -> None:
 
 def cmd_enrich(args) -> None:
     from tg_analyst.enrich.pipeline import enrich
-    from tg_analyst.enrich.sentiment import get_backend
+    from tg_analyst.enrich.toxicity import backends
 
-    settings = get_settings()
-    name = args.backend or settings.sentiment_backend
-    kwargs = {"model": settings.hf_sentiment_model} if name == "hf" else {}
-    backend = get_backend(name, **kwargs)
+    sentiment, toxicity = backends(get_settings(), args.backend)
     with _session_factory()() as session:
         stats = enrich(
-            session, backend, group_id=args.group_id, batch_size=args.batch_size, force=args.force
+            session,
+            sentiment,
+            group_id=args.group_id,
+            batch_size=args.batch_size,
+            force=args.force,
+            toxicity=toxicity,
         )
     log.info("Enrichment done: %d scored, %d without text", stats.scored, stats.skipped)
 

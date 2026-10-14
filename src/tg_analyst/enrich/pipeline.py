@@ -9,14 +9,16 @@ from sqlalchemy.orm import Session
 from tg_analyst.enrich.clean import CLEAN_VERSION, clean_text, is_analyzable
 from tg_analyst.enrich.intent import INTENT_VERSION, detect_intent
 from tg_analyst.enrich.sentiment import SentimentBackend
+from tg_analyst.enrich.toxicity import ToxicityBackend
 from tg_analyst.storage import repository as repo
 from tg_analyst.storage.models import Enrichment, Message
 
 log = logging.getLogger(__name__)
 
 
-def model_version(backend: SentimentBackend) -> str:
-    return f"{backend.version}|intent-{INTENT_VERSION}|clean-{CLEAN_VERSION}"
+def model_version(backend: SentimentBackend, toxicity: ToxicityBackend | None = None) -> str:
+    tox = f"|{toxicity.version}" if toxicity else ""
+    return f"{backend.version}{tox}|intent-{INTENT_VERSION}|clean-{CLEAN_VERSION}"
 
 
 @dataclass(slots=True)
@@ -51,13 +53,14 @@ def enrich(
     group_id: int | None = None,
     batch_size: int = 256,
     force: bool = False,
+    toxicity: ToxicityBackend | None = None,
 ) -> EnrichStats:
     """Score pending messages in batches, committing after each batch.
 
     With ``force`` every message is re-scored once (keyset pagination avoids re-reading rows
     already written in this run).
     """
-    version = model_version(backend)
+    version = model_version(backend, toxicity)
     stats = EnrichStats()
     after: tuple[int, int] | None = None
 
@@ -75,12 +78,15 @@ def enrich(
 
         cleaned = [clean_text(r.text) for r in rows]
         todo = [i for i, c in enumerate(cleaned) if is_analyzable(c)]
-        scores = backend.score([cleaned[i] for i in todo]) if todo else []
+        texts = [cleaned[i] for i in todo]
+        scores = backend.score(texts) if todo else []
         results = dict(zip(todo, scores, strict=True))
+        toxic = dict(zip(todo, toxicity.score(texts), strict=True)) if toxicity and todo else {}
 
         out = []
         for i, row in enumerate(rows):
             res = results.get(i)
+            tox = toxic.get(i)
             out.append(
                 {
                     "group_id": row.group_id,
@@ -90,7 +96,10 @@ def enrich(
                     "intent": detect_intent(cleaned[i], res.label if res else None)
                     if res
                     else None,
-                    "toxicity": None,
+                    "toxicity": tox.toxicity if tox else None,
+                    "insult": tox.insult if tox else None,
+                    "obscenity": tox.obscenity if tox else None,
+                    "threat": tox.threat if tox else None,
                     "topics": None,
                     "model_version": version,
                 }

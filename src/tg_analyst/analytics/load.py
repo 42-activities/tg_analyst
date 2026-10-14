@@ -30,6 +30,9 @@ def messages(engine: Engine, group_id: int, start: datetime, end: datetime) -> p
             Enrichment.sentiment_score,
             Enrichment.sentiment_label,
             Enrichment.intent,
+            Enrichment.insult,
+            Enrichment.obscenity,
+            Enrichment.threat,
             User.username,
             User.display_name,
             User.is_bot,
@@ -53,9 +56,10 @@ def messages(engine: Engine, group_id: int, start: datetime, end: datetime) -> p
 def interactions(engine: Engine, group_id: int, start: datetime, end: datetime) -> pd.DataFrame:
     """Interaction edges with their tone.
 
-    Replies and mentions carry the tone of the message that created them. A reaction edge's
-    ``message_id`` is the message reacted to, written by the *target*, so its tone comes
-    from the emoji instead (the mean if one member left several reactions).
+    Replies and mentions carry the tone and toxicity of the message that created them. A
+    reaction edge's ``message_id`` is the message reacted to, written by the *target*, so
+    its tone comes from the emoji instead (the mean if one member left several reactions)
+    and it has no toxicity.
     """
     stmt = (
         select(
@@ -65,6 +69,9 @@ def interactions(engine: Engine, group_id: int, start: datetime, end: datetime) 
             Interaction.timestamp,
             Interaction.message_id,
             Enrichment.sentiment_score,
+            Enrichment.insult,
+            Enrichment.obscenity,
+            Enrichment.threat,
         )
         .outerjoin(
             Enrichment,
@@ -106,6 +113,8 @@ def interactions(engine: Engine, group_id: int, start: datetime, end: datetime) 
         .mean()
     )
     is_reaction = edges["type"] == "reaction"
+    # The reacted-to message's toxicity belongs to its author, not to the reactor.
+    edges.loc[is_reaction, ["insult", "obscenity", "threat"]] = float("nan")
     keys = pd.MultiIndex.from_frame(edges.loc[is_reaction, ["message_id", "source_user_id"]])
     edges.loc[is_reaction, "sentiment_score"] = tone.reindex(keys).to_numpy()
     return edges

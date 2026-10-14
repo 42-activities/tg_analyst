@@ -135,10 +135,14 @@ class Enrichment(Base):
     message_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     sentiment_score: Mapped[float | None] = mapped_column(Float)  # -1.0 .. +1.0
     sentiment_label: Mapped[str | None] = mapped_column(String(16))
-    toxicity: Mapped[float | None] = mapped_column(Float)
+    toxicity: Mapped[float | None] = mapped_column(Float)  # max(insult, obscenity, threat)
+    insult: Mapped[float | None] = mapped_column(Float)  # probabilities, 0..1
+    obscenity: Mapped[float | None] = mapped_column(Float)
+    threat: Mapped[float | None] = mapped_column(Float)
     intent: Mapped[str | None] = mapped_column(String(32))
     topics: Mapped[list[str] | None] = mapped_column(JSON)
-    model_version: Mapped[str] = mapped_column(String(64))
+    # e.g. "hf:<sentiment model>|tox:<toxicity model>|intent-1|clean-1"
+    model_version: Mapped[str] = mapped_column(String(255))
 
     __table_args__ = (
         ForeignKeyConstraint(

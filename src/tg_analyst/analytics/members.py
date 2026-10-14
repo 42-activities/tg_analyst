@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from tg_analyst.analytics.conflict import written
+from tg_analyst.analytics.conflict import flag, written
 from tg_analyst.analytics.metrics import human_messages
 
 
@@ -34,6 +34,8 @@ def member_summary(msgs: pd.DataFrame, edges: pd.DataFrame, user_id: int) -> dic
         "addressed_by": int(talk_in["source_user_id"].nunique()),
         "reactions_given": len(out_edges) - len(talk_out),
         "reactions_received": len(in_edges) - len(talk_in),
+        "insults_sent": int(flag(own, "insult").sum()),
+        "insults_received": int(flag(talk_in, "insult").sum()),
         "messages_answered": round(answered / len(own), 3),
     }
 
