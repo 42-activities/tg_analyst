@@ -9,14 +9,16 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from tg_analyst.analytics import conflict, metrics
+from tg_analyst.analytics import conflict, metrics, topics
 from tg_analyst.dashboard.common import (
+    MENTION,
     TONE_SCALE,
     cached_date_range,
     cached_edges,
     cached_groups,
     cached_messages,
     cached_relationships,
+    cached_terms,
     escape_md,
     fmt,
     fmt_duration,
@@ -70,7 +72,15 @@ def dashboard_page() -> None:
 
     rel = cached_relationships(group_id, start, end)
     tabs = st.tabs(
-        ["Activity & mood", "Members", "Network", "Relationships", "Newcomers", "Messages"]
+        [
+            "Activity & mood",
+            "Members",
+            "Network",
+            "Relationships",
+            "Newcomers",
+            "Topics",
+            "Messages",
+        ]
     )
     with tabs[0]:
         _activity_tab(msgs)
@@ -83,7 +93,12 @@ def dashboard_page() -> None:
     with tabs[4]:
         _newcomers_tab(names, rel)
     with tabs[5]:
-        _messages_tab(msgs, names)
+        terms = cached_terms(group_id, start, end)
+        if hide_names:
+            terms = topics.without_names(terms, [*msgs["username"], *msgs["display_name"]])
+        _topics_tab(msgs, terms, names, hide_names)
+    with tabs[6]:
+        _messages_tab(msgs, names, hide_names)
 
 
 def _kpi_row(msgs: pd.DataFrame) -> None:
@@ -571,7 +586,125 @@ def _newcomers_tab(names: dict, rel: dict) -> None:
     )
 
 
-def _messages_tab(msgs: pd.DataFrame, names: dict) -> None:
+def _topics_tab(msgs: pd.DataFrame, terms: pd.DataFrame, names: dict, hide_names: bool) -> None:
+    top = topics.top_topics(terms, n=40)
+    if top.empty:
+        st.info("Not enough text to extract topics in this period.")
+        return
+    st.caption(
+        "Topics are the most used keywords (word forms merged, filler words dropped) raised by "
+        "at least 3 members. Colour shows each topic's tone **relative to the group's usual "
+        "tone**: red topics are where conversations get tense."
+    )
+    c1, c2 = st.columns([3, 2])
+    chart = top.head(25).iloc[::-1]
+    spread = max(0.1, float(top["tone_vs_group"].abs().max()))
+    c1.plotly_chart(
+        px.bar(
+            chart,
+            x="messages",
+            y="topic",
+            orientation="h",
+            color="tone_vs_group",
+            range_color=[-spread, spread],
+            color_continuous_scale=TONE_SCALE,
+            hover_data={"members": True, "tone": ":+.2f", "tone_vs_group": ":+.2f"},
+            labels={"messages": "Messages", "topic": "", "tone_vs_group": "Tone vs group"},
+            title="Most discussed topics",
+        ).update_layout(height=640),
+        use_container_width=True,
+    )
+    with c2:
+        st.markdown("**Trending: last 30 days vs. before**")
+        trending = topics.trending_topics(terms)
+        if trending.empty:
+            st.caption("No topic stands out in the last 30 days.")
+        else:
+            st.dataframe(
+                trending[["topic", "recent", "before", "lift"]],
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "topic": "Topic",
+                    "recent": "Last 30 days",
+                    "before": "Before",
+                    "lift": st.column_config.NumberColumn(
+                        "Lift", format="%.1f×", help="How much more often than before"
+                    ),
+                },
+            )
+        st.markdown("**Most tense topics**")
+        tense = top[top["tone_vs_group"] < 0].nsmallest(10, "tone_vs_group")
+        st.dataframe(
+            tone_style(
+                tense[["topic", "messages", "tone_vs_group", "negative_share"]], ["tone_vs_group"]
+            ),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "topic": "Topic",
+                "messages": "Messages",
+                "tone_vs_group": st.column_config.NumberColumn("Tone vs group", format="%+.2f"),
+                "negative_share": st.column_config.NumberColumn("Negative", format="percent"),
+            },
+        )
+
+    st.subheader("Topic details")
+    labels = dict(zip(top["stem"], top["topic"], strict=True))
+    stem = st.selectbox("Topic", list(labels), format_func=labels.get)
+    timeline = topics.topic_timeline(terms, stem)
+    fig = go.Figure()
+    fig.add_bar(
+        x=timeline["period"],
+        y=timeline["messages"],
+        name="Messages per week",
+        marker_color="#9db4d3",
+    )
+    fig.add_scatter(
+        x=timeline["period"],
+        y=timeline["tone"],
+        name="Tone",
+        yaxis="y2",
+        mode="lines",
+        line=dict(color="#c0392b"),
+    )
+    fig.update_layout(
+        height=300,
+        hovermode="x unified",
+        yaxis2=dict(overlaying="y", side="right", range=[-1, 1], dtick=0.5, title="Tone"),
+        legend=dict(orientation="h", y=1.15),
+        margin=dict(t=40, b=20),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    c1, c2 = st.columns([1, 2])
+    who = topics.topic_members(terms, stem)
+    who.insert(0, "member", who["sender_id"].map(lambda u: names.get(u, str(u))))
+    c1.markdown("**Who talks about it**")
+    c1.dataframe(
+        tone_style(who.drop(columns="sender_id"), ["tone"]),
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "member": "Member",
+            "messages": "Messages",
+            "tone": st.column_config.NumberColumn("Tone", format="%+.2f"),
+        },
+    )
+    with c2:
+        st.markdown("**Latest messages**")
+        ids = topics.topic_messages(terms, stem)
+        latest = msgs[msgs["message_id"].isin(ids)].sort_values("timestamp", ascending=False)
+        with st.container(height=420):
+            for row in latest.head(30).itertuples():
+                tone = (
+                    f" · tone {row.sentiment_score:+.2f}" if pd.notna(row.sentiment_score) else ""
+                )
+                who_name = escape_md(names.get(row.sender_id, str(row.sender_id)))
+                st.caption(f"**{who_name}** · {row.timestamp:%Y-%m-%d %H:%M}{tone}")
+                st.markdown(show_text(row.text, hide_names, limit=600))
+
+
+def _messages_tab(msgs: pd.DataFrame, names: dict, hide_names: bool = False) -> None:
     human = metrics.human_messages(msgs).copy()
     c1, c2, c3 = st.columns([2, 1, 1])
     query = c1.text_input("Search text")
@@ -584,6 +717,10 @@ def _messages_tab(msgs: pd.DataFrame, names: dict) -> None:
     if intent:
         human = human[human["intent"].isin(intent)]
     human["member"] = human["sender_id"].map(names)
+    if hide_names:
+        human["text"] = human["text"].map(
+            lambda t: MENTION.sub("@user", t) if isinstance(t, str) else t
+        )
     st.caption(f"{len(human):,} messages")
     st.dataframe(
         human[["timestamp", "member", "text", "sentiment_score", "sentiment_label", "intent"]]

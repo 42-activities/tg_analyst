@@ -7,13 +7,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from tg_analyst.analytics import members, metrics
+from tg_analyst.analytics import members, metrics, topics
 from tg_analyst.dashboard.common import (
     cached_date_range,
     cached_edges,
     cached_groups,
     cached_messages,
     cached_relationships,
+    cached_terms,
     fmt,
     show_text,
     tone_style,
@@ -101,6 +102,10 @@ def member_page() -> None:
 
     _activity(msgs, user_id)
     _partners(edges, user_id, names)
+    terms = cached_terms(group_id, start, end)
+    if hide_names:
+        terms = topics.without_names(terms, [*msgs["username"], *msgs["display_name"]])
+    _topics(terms, user_id)
     _conflicts(rel, user_id, names)
     _recent(human, user_id, hide_names)
 
@@ -160,6 +165,27 @@ def _partners(edges: pd.DataFrame, user_id: int, names: dict) -> None:
             "tone_to_them": st.column_config.NumberColumn("Tone sent", format="%+.2f"),
             "tone_from_them": st.column_config.NumberColumn("Tone received", format="%+.2f"),
             "total": "Interactions",
+        },
+    )
+
+
+def _topics(terms: pd.DataFrame, user_id: int) -> None:
+    mine = topics.member_topics(terms, user_id)
+    if mine.empty:
+        return
+    st.subheader("What they talk about")
+    st.caption("Topics they raise more often than the group does.")
+    st.dataframe(
+        tone_style(mine.drop(columns="stem"), ["tone"]),
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "topic": "Topic",
+            "messages": "Their messages",
+            "lift": st.column_config.NumberColumn(
+                "Vs. group", format="%.1f×", help="How much more often than the group average"
+            ),
+            "tone": st.column_config.NumberColumn("Tone", format="%+.2f"),
         },
     )
 

@@ -61,7 +61,8 @@ Goal: a Streamlit app over M3.
 - [x] PostgreSQL deployment profile (docker-compose)
 - [x] Privacy opt-out: excluded members are purged and skipped by ingestion (`0002_excluded_users`)
 - [ ] Reaction edges (`GetMessageReactionsList`, available only in some groups)
-- [ ] Topic extraction (keywords, then BERTopic)
+- [x] Topic extraction, keyword version: stemmed keywords, tone vs. group, trending, per-topic drill-down, member topics (Topics tab, member page)
+- [ ] Model-based topics (BERTopic or embedding clusters), only if keywords fall short. Could share embeddings with M6.
 - [x] Docker image; arm64 auto-deploy on push to `main` with rollback
 - [x] Public URL with HTTPS and basic auth (https://tg-analyst.naurzalinov.me)
 - [x] Sync with Telegram: apply edits and deletions (listener events + periodic re-check of stored messages)

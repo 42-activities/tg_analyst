@@ -72,6 +72,13 @@ def tone_style(df: pd.DataFrame, columns: list[str]):
     return df.style.map(_tone_color, subset=columns)
 
 
+@st.cache_data(ttl=300, show_spinner="Extracting topics…")
+def cached_terms(group_id: int, start: datetime, end: datetime) -> pd.DataFrame:
+    from tg_analyst.analytics import topics
+
+    return topics.message_terms(cached_messages(group_id, start, end))
+
+
 @st.cache_data(ttl=300)
 def cached_date_range(group_id: int):
     return load.date_range(engine(), group_id)

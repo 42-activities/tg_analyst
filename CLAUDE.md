@@ -29,7 +29,7 @@ src/tg_analyst/
   storage/       # ORM models, repositories, migrations (alembic)
   enrich/        # text cleaning, sentiment, toxicity, intent, topics
   graph/         # network.py (graph, centrality, communities), roles.py
-  analytics/     # load.py (only I/O) + pure functions: metrics, newcomers, conflict
+  analytics/     # load.py (only I/O) + pure functions: metrics, newcomers, conflict, members, topics
   dashboard/     # Streamlit app.py + views/
 tests/
 data/            # local DB and *.session files; git-ignored
@@ -83,6 +83,7 @@ docker compose up -d db && docker compose run --rm app seed   # containerized st
 - **Handle rate limits.** Catch Telethon's `FloodWaitError` and sleep for `e.seconds`. Never use tight loops against the API.
 - **Version the models.** Store `model_version` with each enrichment row so a model change can trigger re-scoring.
 - **Pure analytics.** Functions in `analytics/` and `graph/` take DataFrames or graphs and return results with no I/O, which makes them easy to unit test.
+- **Topics are keywords** (`enrich/keywords.py`: Snowball stems, RU/EN/FR stopwords, plus `GENERIC_WORDS` filtered by stem). They're computed from message text when the dashboard loads (`analytics.topics.message_terms`, about 3 s for 36k messages, cached), not stored, so tuning the stopwords needs no re-scoring. If a generic word tops the real group's topic list, add it to `GENERIC_WORDS`. Tone per topic is shown relative to the group (`tone_vs_group`).
 - **Cache in Streamlit.** Use `st.cache_data` for queries and aggregates, and `st.cache_resource` for DB engines and models.
 - Store timestamps in UTC. Convert to the viewer's local time only in the dashboard.
 

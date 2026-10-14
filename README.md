@@ -6,7 +6,7 @@ Telegram groups host tech communities, customer support and local and profession
 
 > **Focus:** the sentiment analysis here is about **user relationships and community dynamics**: member-to-member tone, how members treat newcomers, how admins and members interact, and whether conflict is rising. It does not measure market or crypto sentiment.
 
-> **Status:** in production at <https://tg-analyst.naurzalinov.me> (password-protected). Ingestion, Russian-capable sentiment, relationship analytics and the dashboard all work. Next up: reactions, topics and toxicity, then "ask the chat" (RAG). See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status:** in production at <https://tg-analyst.naurzalinov.me> (password-protected). Ingestion, Russian-capable sentiment, relationship analytics and the dashboard all work. Next up: reactions and toxicity, then "ask the chat" (RAG). See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -33,7 +33,7 @@ Telegram groups host tech communities, customer support and local and profession
 |---|---|---|
 | 1. Ingestion | Telethon (MTProto) | Resumable history back-fill and a live listener. Builds reply and mention edges and waits out `FloodWaitError` rate limits. |
 | 2. Storage | PostgreSQL 16 | Normalized tables for messages, users and interactions, plus enrichment results and a job queue. |
-| 3. Enrichment | Transformer sentiment (Russian or multilingual model), VADER for English | Cleans text, scores tone (-1.0 to +1.0) and detects intent (question, thanks, complaint, greeting). Toxicity and topics are planned. |
+| 3. Enrichment | Transformer sentiment (Russian or multilingual model), VADER for English | Cleans text, scores tone (-1.0 to +1.0) and detects intent (question, thanks, complaint, greeting). Keyword topics are computed when the dashboard loads (Snowball stemming, RU/EN/FR stopwords). Toxicity is planned. |
 | 4. Analytics | pandas + NetworkX (pure functions) | Interaction graph, centrality and communities, member roles, newcomer outcomes, conflict episodes. |
 | 5. Presentation | Streamlit + Plotly | Dashboard tabs and a Jobs page that queues work for a background worker. |
 
@@ -77,14 +77,17 @@ Messages, active members, daily and weekly active members, average tone, share o
 ### Newcomers
 Whether a newcomer's first message got an answer, how fast and in what tone, and whether answered vs. unanswered newcomers were still active 14 days later. This needs join events, which large groups sometimes hide from non-admins.
 
+### Topics
+What the group talks about. Keywords are stemmed, so "виза", "визу" and "визы" count as one topic, and stopwords and chat filler are dropped. A keyword only counts as a topic if at least 3 members use it. Each topic shows its tone **relative to the group's usual tone**, so tense subjects stand out even in a rough chat (money and administration, in the real group). The tab also shows what's trending in the last 30 days compared with before. For any topic you can see its weekly volume and tone, who talks about it, and its latest messages. With pseudonymization on, member names are dropped from the keywords.
+
 ### Messages
-Search by text, tone and message type.
+Search by text, tone and message type. With pseudonymization on, @usernames in the text are masked.
 
 ### Member page
-Everything about one person, reachable from the sidebar or as `/member?user=<id>`: role, activity and tone over time, when they write, who they talk to (with tone sent and received), their conflict episodes and recent messages.
+Everything about one person, reachable from the sidebar or as `/member?user=<id>`: role, activity and tone over time, when they write, who they talk to (with tone sent and received), the topics they raise more than the group does, their conflict episodes and recent messages.
 
 ### ⏳ Planned
-Topic extraction with tone per topic, reactions as interactions and toxicity scores. Later: "ask the chat" (RAG) over the group's Q&A, see M6 in the roadmap.
+Reactions as interactions, toxicity scores, and model-based topics (BERTopic) if the keyword topics fall short. Later: "ask the chat" (RAG) over the group's Q&A, see M6 in the roadmap.
 
 ### Staying in sync with Telegram
 The worker keeps every scraped group up to date on its own. It fetches new messages and scores them every `AUTO_REFRESH_MINUTES` (default 60). Every `AUTO_RECONCILE_HOURS` (default 24) it re-checks the last `RECONCILE_DAYS` (default 30) of stored messages: messages deleted in Telegram are deleted here too, and edited ones are updated and re-scored. A full-history re-check can be started from the Jobs page.
@@ -189,7 +192,7 @@ tg_analyst/
 │   ├── storage/           # SQLAlchemy models, upserts, interaction-edge builder
 │   ├── jobs.py            # DB-backed job queue + worker
 │   ├── enrich/            # cleaning, sentiment backends (VADER / HF), intent
-│   ├── analytics/         # loaders + pure functions: metrics, newcomers, conflict
+│   ├── analytics/         # loaders + pure functions: metrics, newcomers, conflict, members, topics
 │   ├── graph/             # interaction graph, centrality, communities, roles
 │   └── dashboard/         # Streamlit app: views/dashboard.py, member.py, jobs.py (not "pages/": Streamlit would auto-list it)
 ├── tests/
