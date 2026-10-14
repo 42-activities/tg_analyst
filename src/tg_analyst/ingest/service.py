@@ -1,11 +1,12 @@
 """Back-fill and live ingestion of Telegram groups."""
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 from telethon import TelegramClient, events
+from telethon.tl import types
 from telethon.utils import get_peer_id
 
 from tg_analyst.ingest.convert import group_to_record, message_to_record, sender_to_record
@@ -113,6 +114,47 @@ async def backfill(
     return total
 
 
+RECONCILE_BATCH = 100  # Telegram returns at most 100 messages per get_messages(ids=...)
+
+
+async def reconcile(
+    client: TelegramClient,
+    session_factory: sessionmaker,
+    group: str,
+    days: int | None = 30,
+) -> dict[str, int]:
+    """Re-check stored messages against Telegram: drop deleted ones, apply edits.
+
+    ``days=None`` re-checks the whole history. Telethon returns ``None`` (or an empty
+    message) for ids that no longer exist, which is how deletions are detected.
+    """
+    entity, group_id = await resolve_group(client, session_factory, group)
+    since = (
+        datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days) if days is not None else None
+    )
+    with session_factory() as session:
+        ids = repo.stored_message_ids(session, group_id, since)
+        excluded = repo.excluded_ids(session)
+
+    stats = {"checked": 0, "deleted": 0, "edited": 0}
+    for start in range(0, len(ids), RECONCILE_BATCH):
+        chunk = ids[start : start + RECONCILE_BATCH]
+        found = await client.get_messages(entity, ids=chunk)
+        gone, edited = [], []
+        for mid, msg in zip(chunk, found, strict=True):
+            if msg is None or isinstance(msg, types.MessageEmpty):
+                gone.append(mid)
+            elif msg.sender_id not in excluded and getattr(msg, "action", None) is None:
+                edited.append(message_to_record(msg, group_id))
+        with session_factory() as session:
+            stats["deleted"] += repo.delete_messages(session, group_id, gone)
+            stats["edited"] += repo.apply_edits(session, group_id, edited)
+            session.commit()
+        stats["checked"] += len(chunk)
+    log.info("Reconciled group %s: %s", group_id, stats)
+    return stats
+
+
 async def listen(client: TelegramClient, session_factory: sessionmaker, groups: list[str]) -> None:
     """Store new messages as they arrive until the client disconnects."""
     group_ids: dict[int, object] = {}
@@ -148,6 +190,25 @@ async def listen(client: TelegramClient, session_factory: sessionmaker, groups: 
     async def _on_action(event):
         if event.action_message is not None:
             await _store(event.action_message, event.chat_id)
+
+    @client.on(events.MessageEdited(chats=chats))
+    async def _on_edit(event):
+        gid = event.chat_id
+        with session_factory() as session:
+            if event.message.sender_id in repo.excluded_ids(session):
+                return
+            repo.apply_edits(session, gid, [message_to_record(event.message, gid)])
+            session.commit()
+
+    @client.on(events.MessageDeleted(chats=chats))
+    async def _on_delete(event):
+        # Basic groups don't say which chat a deletion belongs to (chat_id is None); the
+        # periodic reconcile job catches those.
+        if event.chat_id is None:
+            return
+        with session_factory() as session:
+            repo.delete_messages(session, event.chat_id, event.deleted_ids)
+            session.commit()
 
     log.info("Listening to %d group(s); Ctrl+C to stop", len(group_ids))
     await client.run_until_disconnected()

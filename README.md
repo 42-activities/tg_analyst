@@ -6,7 +6,7 @@ Telegram groups host tech communities, customer support and local and profession
 
 > **Focus:** the sentiment analysis here is about **user relationships and community dynamics**: member-to-member tone, how members treat newcomers, how admins and members interact, and whether conflict is rising. It does not measure market or crypto sentiment.
 
-> **Status:** in production at <https://tg-analyst.naurzalinov.me> (password-protected). Ingestion, Russian-capable sentiment, relationship analytics and the dashboard all work. Next up: a per-member page, scheduled refresh, reactions and topics. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status:** in production at <https://tg-analyst.naurzalinov.me> (password-protected). Ingestion, Russian-capable sentiment, relationship analytics and the dashboard all work. Next up: a per-member page, reactions, topics, then "ask the chat" (RAG). See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -81,7 +81,10 @@ Whether a newcomer's first message got an answer, how fast and in what tone, and
 Search by text, tone and message type.
 
 ### ⏳ Planned
-A per-member drill-down page, topic extraction with tone per topic, reactions as interactions, toxicity scores, and scheduled refresh of new messages.
+A per-member drill-down page, topic extraction with tone per topic, reactions as interactions and toxicity scores. Later: "ask the chat" (RAG) over the group's Q&A, see M6 in the roadmap.
+
+### Staying in sync with Telegram
+The worker keeps every scraped group up to date on its own. It fetches new messages and scores them every `AUTO_REFRESH_MINUTES` (default 60). Every `AUTO_RECONCILE_HOURS` (default 24) it re-checks the last `RECONCILE_DAYS` (default 30) of stored messages: messages deleted in Telegram are deleted here too, and edited ones are updated and re-scored. A full-history re-check can be started from the Jobs page.
 
 ---
 

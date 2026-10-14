@@ -64,8 +64,8 @@ Goal: a Streamlit app over M3.
 - [ ] Topic extraction (keywords, then BERTopic)
 - [x] Docker image; arm64 auto-deploy on push to `main` with rollback
 - [x] Public URL with HTTPS and basic auth (https://tg-analyst.naurzalinov.me)
-- [ ] Sync with Telegram: apply edits and deletions (listener events + periodic re-check of stored messages)
-- [ ] Scheduled refresh: periodic incremental back-fill + enrichment for every group
+- [x] Sync with Telegram: apply edits and deletions (listener events + periodic re-check of stored messages)
+- [x] Scheduled refresh: periodic incremental back-fill + enrichment for every group
 
 ## M6 — Ask the chat (RAG) — planned, not started
 Goal: answer practical questions from the group's collective memory (titre de séjour, préfecture, plan de formation, banks, 42 rules…) and cite the original messages.
@@ -77,7 +77,8 @@ question ──▶ embed ──▶ hybrid search (vector + PostgreSQL full-text)
 ```
 
 **Prerequisites (before relying on it)**
-- [ ] Database in sync with Telegram (edits/deletions, see M5). Deletions must also remove chunks and embeddings, or answers keep quoting deleted messages.
+- [x] Database in sync with Telegram (edits/deletions, see M5)
+- [ ] Deletions must also remove chunks and embeddings (cascade from `messages`), or answers keep quoting deleted messages
 - [ ] Privacy and consent (GDPR applies): keep it private to the group, pseudonymize names in answers, honour opt-outs (`excluded_users`), and decide whether chat text may go to a cloud LLM or must stay on a local model.
 - [ ] Content stays private: the repo is public, so test data stays synthetic. Chunks and embeddings live only in the production database.
 

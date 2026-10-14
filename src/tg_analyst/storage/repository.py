@@ -274,3 +274,54 @@ def include_user(session: Session, user_id: int) -> bool:
     return bool(
         session.execute(delete(ExcludedUser).where(ExcludedUser.user_id == user_id)).rowcount
     )
+
+
+# --- keeping the database in sync with Telegram ---------------------------------------------
+
+
+def delete_messages(session: Session, group_id: int, message_ids: Iterable[int]) -> int:
+    """Remove messages deleted in Telegram (enrichment and edges cascade)."""
+    ids = list(message_ids)
+    if not ids:
+        return 0
+    return session.execute(
+        delete(Message).where(Message.group_id == group_id, Message.message_id.in_(ids))
+    ).rowcount
+
+
+def apply_edits(session: Session, group_id: int, records: Sequence[MessageRecord]) -> int:
+    """Store edited messages whose text changed; returns how many changed.
+
+    Their enrichment is dropped so the next enrichment run re-scores them, and their
+    edges are rebuilt (an edit can add or remove @mentions).
+    """
+    if not records:
+        return 0
+    stored = dict(
+        session.execute(
+            select(Message.message_id, Message.text).where(
+                Message.group_id == group_id,
+                Message.message_id.in_([r.message_id for r in records]),
+            )
+        ).all()
+    )
+    changed = [r for r in records if r.message_id in stored and stored[r.message_id] != r.text]
+    if not changed:
+        return 0
+    ids = [r.message_id for r in changed]
+    upsert_messages(session, changed)
+    session.execute(
+        delete(Enrichment).where(Enrichment.group_id == group_id, Enrichment.message_id.in_(ids))
+    )
+    session.execute(
+        delete(Interaction).where(Interaction.group_id == group_id, Interaction.message_id.in_(ids))
+    )
+    build_interactions(session, group_id, min_message_id=min(ids))
+    return len(changed)
+
+
+def stored_message_ids(session: Session, group_id: int, since: datetime | None = None) -> list[int]:
+    stmt = select(Message.message_id).where(Message.group_id == group_id)
+    if since is not None:
+        stmt = stmt.where(Message.timestamp >= since)
+    return list(session.scalars(stmt.order_by(Message.message_id)))

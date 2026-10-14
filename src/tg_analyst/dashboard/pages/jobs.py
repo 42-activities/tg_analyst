@@ -7,9 +7,10 @@ import streamlit as st
 from sqlalchemy import select
 
 from tg_analyst import jobs
+from tg_analyst.config import get_settings
 from tg_analyst.dashboard.common import escape_md, session_factory
 from tg_analyst.ingest.groupref import GroupRefError, parse_group_ref
-from tg_analyst.storage.models import ExcludedUser, User
+from tg_analyst.storage.models import ExcludedUser, Group, User
 
 
 def jobs_page() -> None:
@@ -67,6 +68,7 @@ def jobs_page() -> None:
         if c3.button("Load demo data", help="Synthetic community, no Telegram needed"):
             st.toast(f"Queued demo data job #{jobs.enqueue(s, 'seed').id}")
 
+    _sync_controls()
     _job_table()
     _exclusions()
 
@@ -88,7 +90,8 @@ def _job_table() -> None:
                 "#": j.id,
                 "status": j.status,
                 "task": j.kind,
-                "target": (j.params or {}).get("group", ""),
+                "target": (j.params or {}).get("group", "")
+                + (" (auto)" if (j.params or {}).get("scheduled") else ""),
                 "created (UTC)": j.created_at,
                 "duration": (j.finished_at - j.started_at)
                 if j.finished_at and j.started_at
@@ -112,6 +115,48 @@ def _job_table() -> None:
     if failed:
         with st.expander(f"Error details for job #{failed[0].id}"):
             st.code(failed[0].error)
+
+
+def _sync_controls() -> None:
+    settings = get_settings()
+    st.subheader("Sync with Telegram")
+    auto = []
+    if settings.auto_refresh_minutes:
+        auto.append(f"new messages every {settings.auto_refresh_minutes} min")
+    if settings.auto_reconcile_hours:
+        auto.append(
+            f"edits and deletions from the last {settings.reconcile_days} days every "
+            f"{settings.auto_reconcile_hours} h"
+        )
+    st.caption(
+        ("The worker fetches " + " and ".join(auto) + " automatically, for every group. ")
+        if auto
+        else "Automatic sync is off (AUTO_REFRESH_MINUTES / AUTO_RECONCILE_HOURS). "
+    )
+    with session_factory()() as s:
+        groups = s.execute(select(Group.group_id, Group.title)).all()
+    if not groups:
+        return
+    with st.form("sync"):
+        c1, c2 = st.columns([2, 2])
+        group = c1.selectbox("Group", groups, format_func=lambda g: g.title or str(g.group_id))
+        scope = c2.radio(
+            "Re-check",
+            ["Last 30 days", "Whole history"],
+            horizontal=True,
+            help="Whole history makes one Telegram request per 100 stored messages",
+        )
+        if st.form_submit_button("Check for edits and deletions now"):
+            with session_factory()() as s:
+                job = jobs.enqueue(
+                    s,
+                    "sync",
+                    {
+                        "group": str(group.group_id),
+                        "days": 30 if scope == "Last 30 days" else None,
+                    },
+                )
+            st.success(f"Queued job #{job.id}")
 
 
 def _exclusions() -> None:

@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 import traceback
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
@@ -19,7 +19,7 @@ from tg_analyst.storage.models import Job
 log = logging.getLogger(__name__)
 
 QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
-KINDS = ("backfill", "enrich", "build_edges", "seed", "exclude", "include")
+KINDS = ("backfill", "enrich", "build_edges", "seed", "exclude", "include", "sync")
 
 
 def _now() -> datetime:
@@ -79,16 +79,15 @@ def _finish(session: Session, job: Job, status: str, result=None, error=None) ->
 # --- execution ---------------------------------------------------------------------------
 
 
-def _run_backfill(factory: sessionmaker, params: dict) -> str:
+def _with_telegram(work) -> object:
+    """Run ``await work(client)`` with a connected, logged-in Telegram client."""
     from tg_analyst.config import get_settings
-    from tg_analyst.ingest.service import backfill, make_client
+    from tg_analyst.ingest.service import make_client
 
     settings = get_settings()
     api_id, api_hash = settings.require_telegram()
-    since = date.fromisoformat(params["since"]) if params.get("since") else None
-    since_dt = datetime(since.year, since.month, since.day, tzinfo=UTC) if since else None
 
-    async def run() -> int:
+    async def run():
         client = make_client(settings.tg_session_path, api_id, api_hash)
         # Not `async with client`: that calls client.start(), which prompts for a phone
         # number on stdin and dies with EOFError in a background worker.
@@ -99,14 +98,39 @@ def _run_backfill(factory: sessionmaker, params: dict) -> str:
                     "Telegram account is not logged in. Run the one-time login on the server: "
                     "docker compose run --rm app login"
                 )
-            return await backfill(
-                client, factory, params["group"], since=since_dt, limit=params.get("limit")
-            )
+            return await work(client)
         finally:
             await client.disconnect()
 
-    n = asyncio.run(run())
+    return asyncio.run(run())
+
+
+def _run_backfill(factory: sessionmaker, params: dict) -> str:
+    from tg_analyst.ingest.service import backfill
+
+    since = date.fromisoformat(params["since"]) if params.get("since") else None
+    since_dt = datetime(since.year, since.month, since.day, tzinfo=UTC) if since else None
+    n = _with_telegram(
+        lambda client: backfill(
+            client, factory, params["group"], since=since_dt, limit=params.get("limit")
+        )
+    )
     return f"Fetched {n} messages from {params['group']}"
+
+
+def _run_sync(factory: sessionmaker, params: dict) -> str:
+    from tg_analyst.ingest.service import reconcile
+
+    days = params.get("days", 30)
+    stats = _with_telegram(lambda client: reconcile(client, factory, params["group"], days=days))
+    if stats["edited"]:
+        with factory() as session:
+            enqueue(session, "enrich", {})  # re-score the edited messages
+    scope = "whole history" if days is None else f"last {days} days"
+    return (
+        f"Checked {stats['checked']} messages ({scope}): {stats['deleted']} deleted, "
+        f"{stats['edited']} edited"
+    )
 
 
 def _run_enrich(factory: sessionmaker, params: dict) -> str:
@@ -177,6 +201,7 @@ RUNNERS = {
     "build_edges": _run_build_edges,
     "seed": _run_seed,
     "exclude": _run_exclude,
+    "sync": _run_sync,
     "include": _run_include,
 }
 
@@ -202,11 +227,86 @@ def run_one(factory: sessionmaker) -> bool:
         return True
 
 
+def schedule_due(
+    session: Session,
+    now: datetime,
+    refresh_minutes: int,
+    reconcile_hours: int,
+    reconcile_days: int,
+) -> list[Job]:
+    """Queue periodic work for every group; returns the jobs created.
+
+    - incremental back-fill + enrichment every ``refresh_minutes``
+    - re-check of the last ``reconcile_days`` against Telegram every ``reconcile_hours``
+
+    A job is due when no job of that kind for the group was created within the interval,
+    which also means nothing is queued twice. 0 disables a schedule. State lives in the
+    jobs table, so restarts and deploys don't reset or duplicate the schedule.
+    """
+    from tg_analyst.storage.models import Group
+
+    plans = []
+    if refresh_minutes > 0:
+        plans.append(
+            (
+                "backfill",
+                timedelta(minutes=refresh_minutes),
+                lambda g: {"group": str(g), "enrich_after": True, "scheduled": True},
+            )
+        )
+    if reconcile_hours > 0:
+        plans.append(
+            (
+                "sync",
+                timedelta(hours=reconcile_hours),
+                lambda g: {"group": str(g), "days": reconcile_days, "scheduled": True},
+            )
+        )
+    created = []
+    for group_id in session.scalars(select(Group.group_id)):
+        for kind, interval, params in plans:
+            recent = session.scalar(
+                select(Job.id)
+                .where(
+                    Job.kind == kind,
+                    Job.params["group"].as_string() == str(group_id),
+                    Job.created_at >= now - interval,
+                )
+                .limit(1)
+            )
+            if recent is None:
+                job = Job(kind=kind, params=params(group_id), status=QUEUED, created_at=now)
+                session.add(job)
+                created.append(job)
+    session.commit()
+    return created
+
+
 def work_forever(factory: sessionmaker, poll_seconds: float = 2.0) -> None:
+    from tg_analyst.config import get_settings
+
+    settings = get_settings()
     with factory() as session:
         if n := recover_stale(session):
             log.warning("Marked %d interrupted job(s) as failed", n)
-    log.info("Worker started; polling every %.1fs", poll_seconds)
+    log.info(
+        "Worker started; polling every %.1fs; refresh every %d min, reconcile every %d h",
+        poll_seconds,
+        settings.auto_refresh_minutes,
+        settings.auto_reconcile_hours,
+    )
+    next_check = 0.0
     while True:
+        if time.monotonic() >= next_check:
+            next_check = time.monotonic() + 60
+            with factory() as session:
+                for job in schedule_due(
+                    session,
+                    _now(),
+                    settings.auto_refresh_minutes,
+                    settings.auto_reconcile_hours,
+                    settings.reconcile_days,
+                ):
+                    log.info("Scheduled job %s (%s) %s", job.id, job.kind, job.params)
         if not run_one(factory):
             time.sleep(poll_seconds)

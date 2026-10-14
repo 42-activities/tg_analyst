@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     sentiment_backend: str = "vader"
     hf_sentiment_model: str = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
 
+    # Worker schedules (0 disables): incremental back-fill + enrichment of every group, and
+    # re-checking the last RECONCILE_DAYS against Telegram for edits and deletions.
+    auto_refresh_minutes: int = 60
+    auto_reconcile_hours: int = 24
+    reconcile_days: int = 30
+
     def require_telegram(self) -> tuple[int, str]:
         """Return (api_id, api_hash) or raise if credentials are missing."""
         if self.tg_api_id is None or self.tg_api_hash is None:
