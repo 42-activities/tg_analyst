@@ -29,13 +29,18 @@ def _persist(
     group_id: int,
     batch: list[tuple[MessageRecord, UserRecord | None]],
     advance: bool = True,
-) -> None:
-    records = [r for r, _ in batch]
-    repo.upsert_users(session, ((u, r.timestamp) for r, u in batch if u is not None))
-    repo.upsert_messages(session, records)
+    excluded: set[int] = frozenset(),
+) -> int:
+    """Store a batch, skipping excluded senders; returns how many messages were skipped."""
+    highest = max(r.message_id for r, _ in batch)
+    kept = [(r, u) for r, u in batch if r.sender_id not in excluded]
+    repo.upsert_users(session, ((u, r.timestamp) for r, u in kept if u is not None))
+    repo.upsert_messages(session, [r for r, _ in kept])
     if advance:
-        repo.advance_high_water_mark(session, group_id, max(r.message_id for r in records))
+        # Advance past skipped messages too, so they aren't fetched again next time.
+        repo.advance_high_water_mark(session, group_id, highest)
     session.commit()
+    return len(batch) - len(kept)
 
 
 async def _find_entity(client: TelegramClient, group: str):
@@ -86,17 +91,21 @@ async def backfill(
     if since is not None and start_id == 0:
         kwargs["offset_date"] = since
 
+    skipped = 0
     with session_factory() as session:
+        excluded = repo.excluded_ids(session)
         async for msg in client.iter_messages(entity, **kwargs):
             batch.append((message_to_record(msg, group_id), sender_to_record(msg.sender)))
             if len(batch) >= BATCH_SIZE:
-                _persist(session, group_id, batch)
+                skipped += _persist(session, group_id, batch, excluded=excluded)
                 total += len(batch)
-                log.info("Stored %d messages", total)
+                log.info("Stored %d messages", total - skipped)
                 batch.clear()
         if batch:
-            _persist(session, group_id, batch)
+            skipped += _persist(session, group_id, batch, excluded=excluded)
             total += len(batch)
+        if skipped:
+            log.info("Skipped %d messages from excluded members", skipped)
         edges = repo.build_interactions(session, group_id, min_message_id=start_id + 1)
         session.commit()
 
@@ -117,7 +126,13 @@ async def listen(client: TelegramClient, session_factory: sessionmaker, groups: 
         with session_factory() as session:
             # The listener never advances the high-water mark: a later back-fill must still
             # fetch any history older than what arrived live.
-            _persist(session, gid, [(record, sender_to_record(sender))], advance=False)
+            _persist(
+                session,
+                gid,
+                [(record, sender_to_record(sender))],
+                advance=False,
+                excluded=repo.excluded_ids(session),
+            )
             repo.build_interactions(session, gid, min_message_id=record.message_id)
             session.commit()
         log.debug("Stored message %s in %s", record.message_id, gid)

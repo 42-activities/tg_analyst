@@ -19,7 +19,7 @@ from tg_analyst.storage.models import Job
 log = logging.getLogger(__name__)
 
 QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
-KINDS = ("backfill", "enrich", "build_edges", "seed")
+KINDS = ("backfill", "enrich", "build_edges", "seed", "exclude", "include")
 
 
 def _now() -> datetime:
@@ -146,11 +146,38 @@ def _run_seed(factory: sessionmaker, params: dict) -> str:
     return f"Loaded {len(community.messages)} synthetic messages"
 
 
+def _run_exclude(factory: sessionmaker, params: dict) -> str:
+    from tg_analyst.storage import repository as repo
+
+    with factory() as session:
+        uid = repo.resolve_user(session, str(params["user"]))
+        removed = repo.exclude_user(session, uid, params.get("note"))
+        session.commit()
+    return (
+        f"Excluded {uid}: removed {removed['messages']} messages and "
+        f"{removed['interactions']} replies/mentions"
+    )
+
+
+def _run_include(factory: sessionmaker, params: dict) -> str:
+    from tg_analyst.storage import repository as repo
+
+    with factory() as session:
+        uid = repo.resolve_user(session, str(params["user"]))
+        found = repo.include_user(session, uid)
+        session.commit()
+    if not found:
+        return f"{uid} was not excluded"
+    return f"{uid} is no longer excluded (old messages return only with a full re-scrape)"
+
+
 RUNNERS = {
     "backfill": _run_backfill,
     "enrich": _run_enrich,
     "build_edges": _run_build_edges,
     "seed": _run_seed,
+    "exclude": _run_exclude,
+    "include": _run_include,
 }
 
 

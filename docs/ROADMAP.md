@@ -57,8 +57,9 @@ Goal: a Streamlit app over M3.
 - [x] Pseudonymization toggle for screenshots and sharing
 
 ## M5 — Hardening and scale
-- [ ] Alembic migrations (replacing `create_all`)
-- [ ] PostgreSQL deployment profile (docker-compose)
+- [x] Alembic migrations (replacing `create_all`); production stamped at `0001_baseline`
+- [x] PostgreSQL deployment profile (docker-compose)
+- [x] Privacy opt-out: excluded members are purged and skipped by ingestion (`0002_excluded_users`)
 - [ ] Reaction edges (`GetMessageReactionsList`, available only in some groups)
 - [ ] Topic extraction (keywords, then BERTopic)
 - [x] Docker image; arm64 auto-deploy on push to `main` with rollback

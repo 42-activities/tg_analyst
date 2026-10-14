@@ -6,7 +6,7 @@ Telegram groups host tech communities, customer support and local and profession
 
 > **Focus:** the sentiment analysis here is about **user relationships and community dynamics**: member-to-member tone, how members treat newcomers, how admins and members interact, and whether conflict is rising. It does not measure market or crypto sentiment.
 
-> **Status:** in production at <https://tg-analyst.naurzalinov.me> (password-protected). Ingestion, Russian-capable sentiment, relationship analytics and the dashboard all work. Next up: database migrations, a per-member page, scheduled refresh, reactions and topics. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status:** in production at <https://tg-analyst.naurzalinov.me> (password-protected). Ingestion, Russian-capable sentiment, relationship analytics and the dashboard all work. Next up: a per-member page, scheduled refresh, reactions and topics. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -203,6 +203,7 @@ This tool processes personal conversations, so:
 - Analyze only groups you are a member of and are permitted to analyze. Respect Telegram's Terms of Service and local privacy law (e.g. GDPR).
 - Never commit `.env`, `*.session` files or databases.
 - Prefer **pseudonymized user IDs** in exports and shared dashboards.
+- **Members can opt out.** On the Jobs page (*Privacy: excluded members*) or with `tg-analyst exclude --user @name`, a member's messages are deleted along with the replies and mentions pointing at them, and every future back-fill skips them. Don't delete rows by hand: a re-scrape would bring them back.
 - The analytics describe interaction patterns. Do not use them to profile or target individuals.
 
 ## License

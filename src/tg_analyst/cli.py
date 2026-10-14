@@ -160,6 +160,31 @@ def cmd_web(args) -> None:
     raise SystemExit(subprocess.call(cmd))
 
 
+def cmd_exclude(args) -> None:
+    from tg_analyst.storage import repository as repo
+
+    with _session_factory()() as session:
+        uid = repo.resolve_user(session, args.user)
+        removed = repo.exclude_user(session, uid, args.note)
+        session.commit()
+    log.info(
+        "Excluded %s: removed %d messages and %d replies/mentions",
+        uid,
+        removed["messages"],
+        removed["interactions"],
+    )
+
+
+def cmd_include(args) -> None:
+    from tg_analyst.storage import repository as repo
+
+    with _session_factory()() as session:
+        uid = repo.resolve_user(session, args.user)
+        found = repo.include_user(session, uid)
+        session.commit()
+    log.info("%s %s", uid, "is no longer excluded" if found else "was not excluded")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tg-analyst", description=__doc__)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -198,6 +223,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8501)
     p.set_defaults(func=cmd_web)
+
+    p = sub.add_parser("exclude", help="opt a member out: delete and skip their messages")
+    p.add_argument("--user", required=True, help="@username or numeric Telegram id")
+    p.add_argument("--note")
+    p.set_defaults(func=cmd_exclude)
+
+    p = sub.add_parser("include", help="lift a member's exclusion")
+    p.add_argument("--user", required=True, help="@username or numeric Telegram id")
+    p.set_defaults(func=cmd_include)
 
     p = sub.add_parser("enrich", help="score sentiment and intent for new/stale messages")
     p.add_argument("--backend", choices=["vader", "hf"], help="default: SENTIMENT_BACKEND")

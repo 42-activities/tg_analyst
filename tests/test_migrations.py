@@ -20,6 +20,9 @@ from tg_analyst.storage.db import (
 from tg_analyst.storage.models import Base, Message
 from tg_analyst.storage.records import GroupRecord, MessageRecord
 
+# Tables introduced by revisions after 0001_baseline.
+LATER_TABLES = {"excluded_users"}
+
 
 @pytest.fixture
 def blank_engine(database_url):
@@ -59,8 +62,10 @@ def test_fresh_database_gets_the_full_schema(blank_engine):
 
 
 def test_pre_migration_database_is_stamped_and_keeps_its_data(blank_engine):
-    # What production looked like before Alembic: tables from create_all, no version table.
-    Base.metadata.create_all(blank_engine)
+    # What production looked like before Alembic: the baseline-era tables from create_all,
+    # no version table. Tables added by later revisions must not exist yet.
+    baseline_tables = [t for t in Base.metadata.sorted_tables if t.name not in LATER_TABLES]
+    Base.metadata.create_all(blank_engine, tables=baseline_tables)
     with make_session_factory(blank_engine)() as s:
         repo.upsert_group(s, GroupRecord(-1, "g"))
         repo.upsert_messages(

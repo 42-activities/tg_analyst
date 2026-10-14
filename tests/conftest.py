@@ -4,8 +4,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from tg_analyst.storage.db import make_engine, make_session_factory
-from tg_analyst.storage.models import Base
+from tg_analyst.storage.db import make_engine, make_session_factory, migrate
 
 # Tests need a PostgreSQL server. Locally: `docker compose up -d db`. The test database is
 # created on first use and wiped before every test, so never point this at real data.
@@ -37,9 +36,12 @@ def database_url() -> str:
 
 @pytest.fixture
 def engine(database_url):
+    """A test database with the schema built exactly as in production: by migrations."""
     eng = make_engine(database_url)
-    Base.metadata.drop_all(eng)
-    Base.metadata.create_all(eng)
+    with eng.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    migrate(eng)
     yield eng
     eng.dispose()
 

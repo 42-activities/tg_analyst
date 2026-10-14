@@ -5,13 +5,20 @@ Upserts use PostgreSQL's native INSERT ... ON CONFLICT.
 
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import and_, case, func, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, aliased
 
-from tg_analyst.storage.models import Enrichment, Group, Interaction, Message, User
+from tg_analyst.storage.models import (
+    Enrichment,
+    ExcludedUser,
+    Group,
+    Interaction,
+    Message,
+    User,
+)
 from tg_analyst.storage.records import GroupRecord, MessageRecord, UserRecord
 
 # Keeps multi-row statements well under PostgreSQL's 65,535 bound-parameter limit.
@@ -120,6 +127,7 @@ def build_interactions(session: Session, group_id: int, min_message_id: int = 0)
     and messages without a known sender are ignored.
     """
     inserted = 0
+    excluded = excluded_ids(session)
 
     # Replies: the edge goes from the replier to the author of the replied-to message.
     parent = aliased(Message)
@@ -175,6 +183,7 @@ def build_interactions(session: Session, group_id: int, min_message_id: int = 0)
             by_username[n.lower()] for n in names or [] if n.lower() in by_username
         }
         targets.discard(src)
+        targets -= excluded
         edges.extend(
             {
                 "group_id": group_id,
@@ -217,3 +226,51 @@ def upsert_enrichment(session: Session, rows: list[dict]) -> None:
             set_={k: stmt.excluded[k] for k in _ENRICHMENT_FIELDS},
         )
         session.execute(stmt)
+
+
+# --- privacy exclusions --------------------------------------------------------------------
+
+
+def excluded_ids(session: Session) -> set[int]:
+    return set(session.scalars(select(ExcludedUser.user_id)))
+
+
+def resolve_user(session: Session, ref: str) -> int:
+    """A numeric user id, or the id of a known @username (case-insensitive)."""
+    ref = ref.strip().removeprefix("@")
+    if ref.lstrip("-").isdigit():
+        return int(ref)
+    uid = session.scalar(select(User.user_id).where(func.lower(User.username) == ref.lower()))
+    if uid is None:
+        raise ValueError(
+            f"Unknown username @{ref}: use the numeric Telegram id instead "
+            "(members who never wrote in a scraped group aren't in the database)."
+        )
+    return uid
+
+
+def exclude_user(session: Session, user_id: int, note: str | None = None) -> dict[str, int]:
+    """Opt a member out: record the exclusion and delete everything stored about their messages.
+
+    Removes their messages (enrichment and edges cascade) and replies/mentions that
+    point at them. Ingestion skips excluded senders from then on. Returns row counts.
+    """
+    session.execute(
+        _insert(session, ExcludedUser)
+        .values(user_id=user_id, note=note, created_at=datetime.now(UTC).replace(tzinfo=None))
+        .on_conflict_do_update(index_elements=[ExcludedUser.user_id], set_={"note": note})
+    )
+    edges = session.execute(
+        delete(Interaction).where(
+            or_(Interaction.target_user_id == user_id, Interaction.source_user_id == user_id)
+        )
+    ).rowcount
+    messages = session.execute(delete(Message).where(Message.sender_id == user_id)).rowcount
+    return {"messages": messages, "interactions": edges}
+
+
+def include_user(session: Session, user_id: int) -> bool:
+    """Lift an exclusion. Their old messages only come back with a full re-scrape."""
+    return bool(
+        session.execute(delete(ExcludedUser).where(ExcludedUser.user_id == user_id)).rowcount
+    )

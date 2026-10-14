@@ -76,3 +76,4 @@ def test_jobs_page_queues_backfill(db_url):
     at.text_input[0].input("https://t.me/some_group/")
     at.button[0].click().run()  # the form submit button comes first
     assert any("Queued job" in s.value and "some_group" in s.value for s in at.success)
+    assert any("Nobody is excluded" in i.value for i in at.info)

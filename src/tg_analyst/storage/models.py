@@ -138,3 +138,13 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
     result: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class ExcludedUser(Base):
+    """A member whose messages are never stored or analysed (privacy opt-out)."""
+
+    __tablename__ = "excluded_users"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    note: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime)

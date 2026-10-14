@@ -4,10 +4,12 @@ from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy import select
 
 from tg_analyst import jobs
-from tg_analyst.dashboard.common import session_factory
+from tg_analyst.dashboard.common import escape_md, session_factory
 from tg_analyst.ingest.groupref import GroupRefError, parse_group_ref
+from tg_analyst.storage.models import ExcludedUser, User
 
 
 def jobs_page() -> None:
@@ -66,6 +68,7 @@ def jobs_page() -> None:
             st.toast(f"Queued demo data job #{jobs.enqueue(s, 'seed').id}")
 
     _job_table()
+    _exclusions()
 
 
 @st.fragment(run_every=5)
@@ -109,6 +112,55 @@ def _job_table() -> None:
     if failed:
         with st.expander(f"Error details for job #{failed[0].id}"):
             st.code(failed[0].error)
+
+
+def _exclusions() -> None:
+    st.subheader("Privacy: excluded members")
+    st.caption(
+        "Excluded members' messages are deleted from the database and skipped by every future "
+        "back-fill, so they never appear in the analysis. Replies and mentions pointing at them "
+        "are removed too. Use a numeric Telegram id or the @username of someone already seen."
+    )
+    with st.form("exclude", clear_on_submit=True):
+        c1, c2 = st.columns([1, 2])
+        who = c1.text_input("Member", placeholder="@username or numeric id")
+        note = c2.text_input("Note (optional)", placeholder="e.g. my own account")
+        if st.form_submit_button("Exclude member"):
+            if not who.strip():
+                st.error("Enter a username or id.")
+            else:
+                with session_factory()() as s:
+                    job = jobs.enqueue(s, "exclude", {"user": who.strip(), "note": note or None})
+                st.success(f"Queued job #{job.id}: the worker removes their data in a few seconds.")
+
+    with session_factory()() as s:
+        rows = s.execute(
+            select(
+                ExcludedUser.user_id,
+                ExcludedUser.note,
+                ExcludedUser.created_at,
+                User.username,
+                User.display_name,
+            )
+            .outerjoin(User, User.user_id == ExcludedUser.user_id)
+            .order_by(ExcludedUser.created_at)
+        ).all()
+    if not rows:
+        st.info("Nobody is excluded.")
+        return
+    for r in rows:
+        c1, c2, c3 = st.columns([3, 3, 1])
+        label = f"@{r.username}" if r.username else (r.display_name or "unknown name")
+        c1.markdown(f"**{escape_md(label)}** · id `{r.user_id}`")
+        c2.caption(f"{escape_md(r.note or '')} · since {r.created_at:%Y-%m-%d}")
+        if c3.button(
+            "Include again",
+            key=f"include_{r.user_id}",
+            help="Old messages return only with a full re-scrape",
+        ):
+            with session_factory()() as s:
+                jobs.enqueue(s, "include", {"user": str(r.user_id)})
+            st.toast("Queued: the exclusion will be lifted")
 
 
 jobs_page()
