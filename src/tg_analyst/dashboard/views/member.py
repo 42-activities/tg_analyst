@@ -198,9 +198,7 @@ def _recent(human: pd.DataFrame, user_id: int, hide_names: bool) -> None:
     for row in own.itertuples():
         tone = f" · tone {row.sentiment_score:+.2f}" if pd.notna(row.sentiment_score) else ""
         st.caption(f"{row.timestamp:%Y-%m-%d %H:%M}{tone}")
-        st.markdown(
-            show_text(row.text, hide_names) if row.text else "_(no text: media or sticker)_"
-        )
+        st.markdown(show_text(row.text, hide_names))
 
 
 member_page()

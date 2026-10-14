@@ -362,9 +362,6 @@ def _relationships_tab(
 def _episode_transcript(
     msgs, edges, names: dict, episode, threshold: float, hide_names: bool = False
 ) -> None:
-    def show(text: str) -> str:
-        # Pseudonymization also masks @usernames inside message text.
-        return show_text(text, hide_names)
 
     a, b = int(episode["user_a"]), int(episode["user_b"])
     chain = conflict.episode_messages(
@@ -396,12 +393,11 @@ def _episode_transcript(
                 st.caption(" · ".join(meta))
                 if pd.notna(row.reply_to_msg_id) and int(row.reply_to_msg_id) in by_id.index:
                     parent = by_id.loc[int(row.reply_to_msg_id)]
-                    snippet = (parent["text"] or "")[:80]
+                    snippet = show_text(parent["text"], hide_names, limit=80)
                     st.caption(
-                        f"↪ replying to {escape_md(names.get(parent['sender_id'], ''))}: "
-                        f"{show(snippet)}"
+                        f"↪ replying to {escape_md(names.get(parent['sender_id'], ''))}: {snippet}"
                     )
-                st.markdown(show(row.text) if row.text else "_(no text: media or sticker)_")
+                st.markdown(show_text(row.text, hide_names))
 
 
 def _network_tab(msgs: pd.DataFrame, names: dict, rel: dict) -> None:

@@ -155,6 +155,8 @@ def generate(days: int = 90, seed: int = 42, start: datetime | None = None) -> S
         )
         if rng.random() < 0.08:
             rec.has_media, rec.media_type = True, rng.choice(["photo", "video", "sticker"])
+            if rec.media_type == "sticker" and mention is None:
+                rec.text = None  # media-only message, as in real chats
         messages.append(rec)
         by_id[msg_id] = rec
         return rec

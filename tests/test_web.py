@@ -97,3 +97,12 @@ def test_member_page(db_url):
     assert at.title[0].value == "feuda"
     assert "first message" in at.caption[0].value  # role, community and dates line
     assert any(sub.value == "Conflict episodes" for sub in at.subheader)
+
+
+def test_show_text_handles_media_only_messages():
+    from tg_analyst.dashboard.common import NO_TEXT, show_text
+
+    assert show_text(float("nan")) == NO_TEXT  # pandas NaN for a missing text
+    assert show_text(None) == NO_TEXT and show_text("") == NO_TEXT
+    assert show_text("@bob [x](y)", hide_names=True) == "@user \\[x\\]\\(y\\)"
+    assert show_text("abcdef", limit=3) == "abc"

@@ -120,6 +120,16 @@ def escape_md(text: str) -> str:
 MENTION = re.compile(r"(?<!\w)@\w{2,}")
 
 
-def show_text(text: str, hide_names: bool = False) -> str:
-    """Chat text safe to render: escaped, with @usernames masked when pseudonymizing."""
+NO_TEXT = "_(no text: media or sticker)_"
+
+
+def show_text(text, hide_names: bool = False, limit: int | None = None) -> str:
+    """Chat text safe to render: escaped, with @usernames masked when pseudonymizing.
+
+    Media-only messages have no text, which pandas stores as NaN (a truthy float), so
+    anything that isn't a non-empty string renders as a placeholder.
+    """
+    if not isinstance(text, str) or not text:
+        return NO_TEXT
+    text = text[:limit] if limit else text
     return escape_md(MENTION.sub("@user", text) if hide_names else text)
