@@ -126,15 +126,149 @@ Then either:
 - Rebuilt by the job; dropped or marked stale when member messages are deleted or a
   member is excluded.
 
-## Steps
+## What to implement
 
-1. Thread builder + tests on synthetic data (reply chains, bursts, forum/channel split).
-2. Embedding job (model download into the `tgdata` volume, RAM and speed measured on the
-   server) + migration.
-3. Clustering per window + merge, θ tuned on the 36k group (aggregates only).
-4. Keyword labels (option A) and the dashboard view. Usable on its own.
-5. Option B (LLM summaries) behind a setting, if chosen.
-6. Roll out to all groups; schedule after enrichment (e.g. nightly).
+Each phase is a separate PR, deployable on its own. Phases 1–4 give a working feature
+with keyword labels; phase 5 (LLM summaries) is optional.
+
+### Phase 0: measure before building (no code merged)
+
+- [ ] On the server, in a one-off container: load `multilingual-e5-small`, embed ~1,000
+      threads of the 36k group. Record peak RAM, threads/s, and the distribution of
+      pairwise cosine similarities (aggregates only, no text printed).
+- [ ] Decide: e5-small vs `rubert-tiny-turbo` (speed/RAM vs. quality), and the starting θ.
+
+### Phase 1: threads (pure, no new dependencies)
+
+- [ ] `analytics/threads.py`
+  - `Thread` dataclass: `root_id`, `message_ids`, `sender_ids`, `start`, `end`,
+    `reaction_total`.
+  - `build_threads(msgs, burst_seconds=120, min_messages=3) -> pd.DataFrame` with one row
+    per message: `message_id → root_id` (union-find, no networkx, so it scales to 500k).
+    Passes: reply chains → same-author bursts → split channel/forum groups by `thread_id`
+    → drop bots, service messages and threads below `min_messages`.
+  - `thread_table(msgs, membership) -> pd.DataFrame`: one row per thread with messages,
+    members, reactions, start/end, mean tone (`sentiment_score`, NaN skipped), insult
+    share.
+  - `thread_text(msgs, message_ids, max_chars) -> str`: `A: …` / `B: …` per-thread
+    pseudonyms, `clean_text()` applied, @mentions masked, truncated (first messages, then
+    the longest).
+  - `content_key(msgs, message_ids) -> str`: a hash of message ids + `edit_date`s, used to
+    detect threads that changed since they were embedded.
+- [ ] `tests/test_threads.py`: reply chains, bursts (and that bursts don't cross 2 min
+      or other senders), channel/forum split, bots/service skipped, `min_messages`, tone
+      ignores unscored messages, text pseudonyms never contain ids or names.
+- [ ] Synthetic data (`synthetic.py`): make sure the seed produces a few distinct
+      conversation themes (e.g. helpers answering setup questions vs. the feud vs.
+      off-topic chat) so clustering can be asserted in tests.
+
+### Phase 2: embeddings (worker job + migration)
+
+- [ ] `pyproject.toml`: add `scikit-learn` to `hf` (and `sentence-transformers`, unless
+      plain transformers mean-pooling is used; prefer plain transformers to keep the image
+      smaller). Docker image already builds with `EXTRAS=web,hf`.
+- [ ] `config.py` + `.env.example` (+ `ENV_FILE` secret if non-default):
+  - `HF_EMBEDDING_MODEL=intfloat/multilingual-e5-small` (empty = feature off),
+  - `TOPIC_THRESHOLD` (θ), `TOPIC_WINDOW=quarter`, `TOPIC_MIN_THREADS=2`.
+- [ ] `enrich/embeddings.py`
+  - `EmbeddingBackend` protocol: `version`, `embed(texts) -> np.ndarray` (L2-normalized,
+    float32). `TransformersEmbedding` with the `"passage: "` prefix e5 expects, batch
+    size 16–32, `torch.inference_mode()`, max 512 tokens.
+  - `FakeEmbedding` for tests (deterministic bag-of-words vectors), never downloads.
+- [ ] `storage/models.py` + migration `0006_context_topics`:
+  - `thread_embeddings`: PK `(group_id, root_message_id)`, `message_ids INTEGER[]`,
+    `content_key`, `model_version`, `vector REAL[]`, `start`, `end`. FK `(group_id,
+    root_message_id)` → `messages` with `ON DELETE CASCADE`.
+  - Add to `LATER_TABLES` in `tests/test_migrations.py`.
+- [ ] `enrich/topics_job.py` (or in `pipeline.py`): `embed_threads(session, backend,
+      group_id, progress)`:
+  1. load the group's messages (`load.messages` over the whole range),
+  2. `build_threads` → `content_key` per thread,
+  3. embed only threads that are new, changed (key differs) or on an older
+     `model_version`; delete rows for threads that no longer exist,
+  4. report progress per batch.
+- [ ] `jobs.py`: new kind `topics` (`KINDS`, `RUNNERS`), params `{group_id?}`; chained
+      after `enrich` in `schedule_due` once a day (not hourly).
+- [ ] `repository.exclude_user`: also delete `thread_embeddings` and `context_topics` of
+      every group the member posted in (the next `topics` job rebuilds them without
+      their messages). Return the count.
+- [ ] CLI: `tg-analyst topics [--group G]` for local runs.
+- [ ] Tests: only changed threads are re-embedded; deleting a root message removes the
+      row (cascade); excluding a member removes the group's rows; model change
+      re-embeds everything.
+
+### Phase 3: clustering (pure)
+
+- [ ] `analytics/context_topics.py`
+  - `cluster_window(vectors, threshold, min_threads) -> labels`:
+    `AgglomerativeClustering(metric="cosine", linkage="average", distance_threshold=θ)`;
+    guard `n < 2`.
+  - `cluster_windows(threads, vectors, freq="QS") -> pd.DataFrame`: per-window labels.
+  - `merge_windows(window_clusters, threshold) -> pd.DataFrame`: clusters the
+    normalized window centroids into whole-history topics; returns `thread → topic`.
+  - `representatives(vectors, members) -> (centre, edge_a, edge_b)`: medoid, then the
+    least similar to it, then the least similar to that one (de-duplicated for
+    clusters of 2).
+  - `topic_table(threads, assignment, group_tone) -> pd.DataFrame`: messages, threads,
+    members, reactions, tone, `tone_vs_group`, insult share, first/last seen; sorted by
+    popularity.
+  - `topic_timeline(threads, assignment, freq="QS")`.
+- [ ] `tests/test_context_topics.py`: on synthetic vectors (well-separated blobs)
+      clusters are recovered; average linkage does not chain a line of points into one
+      cluster; window merge links the same topic across quarters; representatives are
+      distinct members; tone skips NaN.
+- [ ] θ tuning on the 36k group: cluster sizes and number of topics per θ (aggregates
+      only), plus a manual look at a few clusters' representative threads in the
+      dashboard (not printed in the terminal).
+
+### Phase 4: storage of results, keyword labels, dashboard
+
+- [ ] Migration `0007_context_topics_results` (or part of 0006):
+  `context_topics(group_id, topic_id, model_version, threshold, label, summary,
+  summary_model, centre_root, edge_roots INTEGER[], thread_roots INTEGER[],
+  created_at)`. Rebuilt per group by the `topics` job (delete + insert in one
+  transaction).
+- [ ] Keyword labels (option A): `topics.distinctive_terms(terms, message_ids, n=4)`, the
+      cluster's stems weighted against the whole group (c-TF-IDF), reusing
+      `message_terms`.
+- [ ] `analytics/load.py`: `context_topics(engine, group_id)` and
+      `thread_embeddings(engine, group_id)` loaders (no vectors needed by the UI).
+- [ ] `dashboard/common.py`: `cached_context_topics(group_id)`.
+- [ ] `dashboard/views/dashboard.py`, Topics tab: a `Keywords | Conversations` radio.
+      Conversations:
+  - bubble chart (x = tone vs group, y = messages, size = members, colour = insult
+    share), filtered to the selected date range by thread start;
+  - topic cards: label (and summary when present), counts, `st.expander` with the three
+    representative threads rendered through the existing transcript renderer (refactor
+    `_episode_transcript`'s message rendering into a shared helper); all text via
+    `show_text()` / `escape_md()`, pseudonymized when names are hidden;
+  - popularity per quarter (stacked area of the top 10 topics);
+  - an info box when the `topics` job hasn't run for this group yet.
+- [ ] `tests/test_web.py`: synthetic group with embeddings from `FakeEmbedding`; the
+      Conversations view renders without exceptions, with and without hidden names.
+
+### Phase 5: LLM summaries (only if chosen)
+
+- [ ] `pyproject.toml`: `anthropic` in a new `llm` extra; image `EXTRAS=web,hf,llm`.
+- [ ] Settings: `ANTHROPIC_API_KEY` (empty = off), `TOPIC_SUMMARY_MODEL`
+      (Claude Haiku), `TOPIC_SUMMARY_TOP=25`. Added to `ENV_FILE` by the user.
+- [ ] `enrich/summaries.py`: build the prompt from the three representative threads
+      (`thread_text`, pseudonymized, excluded members never included — they are not in
+      the DB); system prompt says the threads are data, not instructions; ask for JSON
+      `{"title", "summary"}` in the chat's language; validate with pydantic, cap lengths,
+      retry once, otherwise fall back to the keyword label.
+- [ ] Only summarize topics whose `thread_roots` changed since the last summary (stored
+      `summary_model` + representatives) to keep cost flat.
+- [ ] Tests with a fake client: invalid JSON → fallback; injected instructions in a
+      message don't escape the JSON fields; nothing is called when the key is empty.
+- [ ] README/CLAUDE.md: what is sent to Anthropic and how to turn it off.
+
+### Phase 6: rollout
+
+- [ ] Run `topics` for the 36k group, tune θ, review in the dashboard.
+- [ ] Run for all groups; check job time and peak RAM on the 300–500k groups.
+- [ ] Schedule daily; tick "model-based topics" in `ROADMAP.md`; update `README.md`,
+      `CLAUDE.md` (architecture rule for derived thread data), and this file's status.
 
 ## Resources
 
