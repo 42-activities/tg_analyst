@@ -237,9 +237,21 @@ What's left is phase 6.
       clusters are recovered; average linkage does not chain a line of points into one
       cluster; window merge links the same topic across quarters; representatives are
       distinct members; tone skips NaN.
-- [ ] θ tuning on the 36k group: cluster sizes and number of topics per θ (aggregates
-      only), plus a manual look at a few clusters' representative threads in the
-      dashboard (not printed in the terminal).
+- [x] θ tuning on the 36k group (2026-10-16, 3,961 threads, counts only). Raw
+      vectors leave one "general chat" blob at every θ: 52–82% of clustered threads.
+      **Centering** the group's vectors (subtract the mean, re-normalize) removes it:
+
+      | Vectors | θ quarter / merge | Threads clustered | Topics (≥ 5 threads) | Largest |
+      |---|---|---|---|---|
+      | raw | 0.20 / 0.20 | 55% | 37 (–) | 70% |
+      | raw | 0.20 / 0.10 | 55% | 352 (–) | 52% |
+      | centered | 0.50 / 0.50 | 37% | 137 (55) | 15% |
+      | centered | **0.60 / 0.50** | 69% | 319 (103) | 19% |
+      | centered | 0.70 / 0.70 | 91% | 95 (64) | 41% |
+
+      Defaults: `TOPIC_THRESHOLD=0.6`, `TOPIC_MERGE_THRESHOLD=0.5`.
+- [ ] A manual look at a few topics' example conversations in the dashboard (by the
+      owner; not printed in the terminal).
 
 ### Phase 4: storage of results, keyword labels, dashboard
 

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from tg_analyst.analytics.context_topics import (
+    center,
     cluster_window,
     cluster_windows,
     merge_windows,
@@ -107,3 +108,14 @@ def test_topic_table_and_timeline():
     timeline = topic_timeline(msgs, membership, assignment)
     assert set(timeline["period"].dt.month) == {1, 4}
     assert timeline["messages"].sum() == 6
+
+
+def test_centering_splits_topics_that_share_a_strong_common_direction():
+    # Every thread is mostly "chat" (a shared direction) plus a little topic signal.
+    topic, truth = blobs(3, 10, noise=0.02)
+    common = np.zeros(16, dtype=np.float32)
+    common[15] = 1
+    vectors = 4 * common + topic
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    assert len(set(cluster_window(vectors, threshold=0.2))) == 1  # one blob
+    assert same_partition(cluster_window(center(vectors), threshold=0.2), truth)

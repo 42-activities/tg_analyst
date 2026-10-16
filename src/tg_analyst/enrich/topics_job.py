@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from tg_analyst.analytics import load
 from tg_analyst.analytics.context_topics import (
+    center,
     cluster_windows,
     merge_windows,
     representatives,
@@ -149,6 +150,7 @@ def build_topics(
     summarizer: Summarizer | None = None,
     summary_top: int = 25,
     progress: Progress = no_progress,
+    merge_threshold: float | None = None,
 ) -> None:
     rows = session.execute(
         select(ThreadEmbedding.root_message_id, ThreadEmbedding.start, ThreadEmbedding.vector)
@@ -164,10 +166,13 @@ def build_topics(
     if rows:
         progress(EMBED_SHARE, f"Clustering {len(rows):,} threads")
         roots = np.array([r.root_message_id for r in rows])
-        vectors = np.array([r.vector for r in rows], dtype=np.float32)
+        vectors = center(np.array([r.vector for r in rows], dtype=np.float32))
         threads = pd.DataFrame({"root_id": roots, "start": [r.start for r in rows]})
         assignment = merge_windows(
-            cluster_windows(threads, vectors, threshold), roots, vectors, threshold
+            cluster_windows(threads, vectors, threshold),
+            roots,
+            vectors,
+            threshold if merge_threshold is None else merge_threshold,
         )
         topics = _describe(
             msgs, membership, assignment, roots, vectors, model_version, threshold, group_id
@@ -242,6 +247,7 @@ def run_topics(
     summarizer: Summarizer | None = None,
     summary_top: int = 25,
     progress: Progress = no_progress,
+    merge_threshold: float | None = None,
 ) -> TopicStats:
     stats = TopicStats()
     progress(None, "Loading messages and building threads")
@@ -259,6 +265,7 @@ def run_topics(
         summarizer,
         summary_top,
         progress,
+        merge_threshold,
     )
     progress(1.0, f"{stats.topics:,} topics from {stats.threads:,} threads")
     return stats

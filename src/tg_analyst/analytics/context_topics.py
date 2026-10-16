@@ -36,6 +36,19 @@ def _normalize(vectors: np.ndarray) -> np.ndarray:
     return vectors / np.where(norms == 0, 1, norms)
 
 
+def center(vectors: np.ndarray) -> np.ndarray:
+    """Subtract the mean vector and re-normalize.
+
+    Chat threads share a strong common direction ("this is casual chat"): raw similarities
+    sit in a narrow band and average linkage merges most generic threads into one blob.
+    Centering removes it. On the 36k group the largest cluster went from 70% of clustered
+    threads to 19% (docs/CONTEXT_TOPICS.md).
+    """
+    if len(vectors) < 2:
+        return vectors
+    return _normalize(vectors - vectors.mean(axis=0))
+
+
 def _centroids(vectors: np.ndarray, labels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Normalized mean vector per label (labels >= 0), and the labels in that order."""
     ids = np.unique(labels[labels >= 0])

@@ -26,7 +26,8 @@ class Settings(BaseSettings):
     # clustering distance threshold, and Claude summaries of the top topics (off without
     # an API key; the text of three pseudonymized threads per topic goes to Anthropic).
     hf_embedding_model: str = "cointegrated/rubert-tiny2"
-    topic_threshold: float = 0.2
+    topic_threshold: float = 0.6  # within a quarter, on mean-centered vectors
+    topic_merge_threshold: float = 0.5  # quarters into whole-history topics
     anthropic_api_key: SecretStr | None = None
     topic_summary_model: str = "claude-haiku-5-5"
     topic_summary_top: int = 25

@@ -302,7 +302,9 @@ def _topic_controls() -> None:
     )
     st.caption(
         "Groups conversation threads by meaning: new or changed threads are embedded with "
-        f"{settings.hf_embedding_model}, then clustered (distance {settings.topic_threshold}), "
+        f"{settings.hf_embedding_model}, then clustered (distance "
+        f"{settings.topic_threshold} per quarter, {settings.topic_merge_threshold} across "
+        "quarters), "
         f"with {summaries}. {schedule}See the **Conversations** view of the Topics tab."
     )
     with session_factory()() as s:

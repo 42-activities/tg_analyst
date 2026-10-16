@@ -312,6 +312,7 @@ def _run_topics(factory: sessionmaker, params: dict, report: Progress) -> str:
                 summarizer,
                 settings.topic_summary_top,
                 scaled,
+                settings.topic_merge_threshold,
             )
             for key in totals:
                 totals[key] += getattr(stats, key)
