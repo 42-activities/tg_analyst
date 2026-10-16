@@ -1,6 +1,7 @@
 # Context topics: threads → embeddings → clusters → summaries
 
-Status: **planned, not started.** Two decisions are open (see the end).
+Status: **in progress.** Decided 2026-10-16: Claude summaries (phase 5), start with the
+36k group (42), embeddings with `rubert-tiny2` (phase 0).
 
 Keyword topics (`analytics/topics.py`) count stemmed words. They are fast and local, but
 they can't tell "visa for a job" from "job interview", and they give no narrative. Context
@@ -23,9 +24,10 @@ messages ──► 1. threads ──► 2. embeddings ──► 3. clusters per 
 2. **Same-author bursts:** a message from the same sender within 2 minutes of their
    previous message joins that message's thread (people split one thought into several
    messages).
-3. **Channel discussion groups / forums:** when nearly every message replies to a channel
-   post or forum topic (`thread_id` = Telegram's top message), split by that top message,
-   so one post's comment section doesn't become one lopsided thread.
+3. **Hubs (channel posts, forum topics):** a message with ≥ 50 direct replies is not a
+   conversation. Replies to it start their own threads, and bursts don't cross hubs.
+   On production, three forum-style groups have hubs with 1,600–2,400 direct replies;
+   ordinary groups never exceed ~31.
 4. Keep threads with **≥ 3 messages**. Leftover single messages are dropped, or later
    attached to the nearest cluster only if their similarity is above the threshold.
 5. Skip bots, service messages and excluded members (as everywhere else).
@@ -47,8 +49,9 @@ Typical thread: 3–4 messages; the largest: 144. Groups where people rarely pre
 
 ### 2. Thread embeddings (worker job, `enrich/embeddings.py`)
 
-- Model: **`intfloat/multilingual-e5-small`** (118M, ~0.5 GB RAM, MIT, RU/EN/FR).
-  Fallback: `cointegrated/rubert-tiny2` or `sergeyzh/rubert-tiny-turbo` (~30M, Russian).
+- Model: **`cointegrated/rubert-tiny2`** (29M, MIT, RU/EN; 21.6 threads/s on the server).
+  Alternative: `intfloat/multilingual-e5-small` (118M, multilingual, but 7× slower).
+  Another option: `sergeyzh/rubert-tiny-turbo` (~30M, Russian).
 - Not Jina v3: ~2.2 GB RAM in fp32 (the server has ~1.7 GB free and no free swap),
   custom remote code, and a non-commercial licence (CC BY-NC).
 - Thread text = messages in order, as `A: …`/`B: …` (per-thread pseudonyms, never ids or
@@ -133,14 +136,26 @@ with keyword labels; phase 5 (LLM summaries) is optional.
 
 ### Phase 0: measure before building (no code merged)
 
-- [ ] On the server, in a one-off container: load `multilingual-e5-small`, embed ~1,000
-      threads of the 36k group. Record peak RAM, threads/s, and the distribution of
-      pairwise cosine similarities (aggregates only, no text printed).
-- [ ] Decide: e5-small vs `rubert-tiny-turbo` (speed/RAM vs. quality), and the starting θ.
+- [x] On the server, in a one-off container: embed 1,000 random threads of the 36k group
+      (aggregates only, no text printed). 2026-10-16, arm64, mean pooling, 512 tokens:
+
+      | | `multilingual-e5-small` | `cointegrated/rubert-tiny2` |
+      |---|---|---|
+      | Speed | 3.1 threads/s | 21.6 threads/s |
+      | Peak RSS (incl. the group's messages) | 1.15 GB | 0.79 GB |
+      | Pairwise cosine p10 / p50 / p90 | 0.82 / 0.85 / 0.88 | 0.53 / 0.65 / 0.78 |
+      | Nearest neighbour p50 | 0.91 | 0.84 |
+      | Usable θ (distance) | 0.10–0.12; one 150-thread blob at 0.12 | 0.15–0.25 |
+
+      Threads in that group: 3,961 (68% of messages with hubs and bursts), median 4
+      messages, largest 64, built in 1.5 s.
+- [x] Decision: **`rubert-tiny2`**: 7× faster (a first full run of a 500k group is ~20 min
+      instead of ~2 h), less RAM, and a wider similarity spread that leaves room for θ.
+      e5 stays a setting. Starting θ = 0.2; tune on 42 in phase 6.
 
 ### Phase 1: threads (pure, no new dependencies)
 
-- [ ] `analytics/threads.py`
+- [x] `analytics/threads.py`
   - `Thread` dataclass: `root_id`, `message_ids`, `sender_ids`, `start`, `end`,
     `reaction_total`.
   - `build_threads(msgs, burst_seconds=120, min_messages=3) -> pd.DataFrame` with one row
@@ -155,7 +170,7 @@ with keyword labels; phase 5 (LLM summaries) is optional.
     the longest).
   - `content_key(msgs, message_ids) -> str`: a hash of message ids + `edit_date`s, used to
     detect threads that changed since they were embedded.
-- [ ] `tests/test_threads.py`: reply chains, bursts (and that bursts don't cross 2 min
+- [x] `tests/test_threads.py`: reply chains, bursts (and that bursts don't cross 2 min
       or other senders), channel/forum split, bots/service skipped, `min_messages`, tone
       ignores unscored messages, text pseudonyms never contain ids or names.
 - [ ] Synthetic data (`synthetic.py`): make sure the seed produces a few distinct
@@ -276,8 +291,10 @@ with keyword labels; phase 5 (LLM summaries) is optional.
   host). Model ~0.5 GB; clustering per quarter < 100 MB.
 - Disk: model ~0.5 GB, embeddings ~50 MB for the largest group. Not a concern.
 
-## Open decisions
+## Decisions
 
-1. **Summaries:** Claude (text of three threads per topic goes to Anthropic) or keyword
-   labels only (nothing leaves the server)?
-2. **Rollout:** start with the 36k group to tune θ, then all groups?
+1. **Summaries:** Claude Haiku summaries of the top topics (the text of three
+   pseudonymized threads per topic goes to Anthropic), with keyword labels as the
+   fallback and when the API key is empty. Decided 2026-10-16.
+2. **Rollout:** the 36k group (42) first to tune θ, then all groups.
+3. **Model:** `rubert-tiny2` (phase 0 measurements).

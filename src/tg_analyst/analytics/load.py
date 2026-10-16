@@ -22,6 +22,8 @@ def messages(engine: Engine, group_id: int, start: datetime, end: datetime) -> p
             Message.timestamp,
             Message.text,
             Message.reply_to_msg_id,
+            Message.thread_id,
+            Message.reaction_count,
             Message.has_media,
             Message.media_type,
             Message.is_service,
