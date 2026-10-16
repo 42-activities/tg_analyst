@@ -107,3 +107,21 @@ def test_without_names_drops_member_names():
     terms = topics.message_terms(chat([(u, 0, "Марина сказала про пиццу", 0.0) for u in (1, 2, 3)]))
     kept = topics.without_names(terms, ["marina_k", "Марина Иванова", None])
     assert set(kept["stem"]) == {stem("пиццу")}
+
+
+def test_distinctive_terms_label_clusters_by_their_own_words():
+    msgs = chat(
+        [
+            (1, 0, "visa appointment at the embassy", 0),
+            (2, 0, "the embassy wants another visa form", 0),
+            (3, 0, "visa again, embassy queue today", 0),
+            (1, 1, "python release notes look good today", 0),
+            (2, 1, "python packaging is a mess today", 0),
+            (3, 1, "python typing release finally", 0),
+        ]
+    )
+    terms = topics.message_terms(msgs)
+    labels = topics.distinctive_terms(terms, pd.Series({1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 1}), n=2)
+    assert set(labels[0].split(", ")) == {"visa", "embassy"}
+    assert labels[1].split(", ")[0] == "python"
+    assert "today" not in labels[0] and "today" not in labels[1]

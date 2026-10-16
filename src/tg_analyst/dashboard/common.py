@@ -102,6 +102,13 @@ def cached_terms(group_id: int, start: datetime, end: datetime) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+def cached_context_topics(group_id: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(topics, thread membership) as stored by the topics job."""
+    eng = engine()
+    return load.context_topics(eng, group_id), load.thread_membership(eng, group_id)
+
+
+@st.cache_data(ttl=300)
 def cached_date_range(group_id: int):
     return load.date_range(engine(), group_id)
 

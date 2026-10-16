@@ -68,7 +68,8 @@ def member_features(msgs: pd.DataFrame, centrality: pd.DataFrame) -> pd.DataFram
     feats["threads_started"] = started.groupby("sender_id").size()
 
     # Joins recorded by service messages count as the start of membership when earlier.
-    feats["joined"] = feats.index.map(join_times(msgs).get)
+    # (No joins in the period gives an all-None column, so force datetimes.)
+    feats["joined"] = pd.to_datetime(feats.index.map(join_times(msgs).get))
     feats["member_since"] = feats[["first_seen", "joined"]].min(axis=1)
 
     if not centrality.empty:

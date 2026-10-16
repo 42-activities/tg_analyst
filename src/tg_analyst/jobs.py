@@ -20,7 +20,7 @@ from tg_analyst.storage.models import Job
 log = logging.getLogger(__name__)
 
 QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
-KINDS = ("backfill", "enrich", "build_edges", "seed", "exclude", "include", "sync")
+KINDS = ("backfill", "enrich", "build_edges", "seed", "exclude", "include", "sync", "topics")
 
 
 def _now() -> datetime:
@@ -74,6 +74,7 @@ _NOTHING_NEW = {
     "backfill": "Fetched 0 messages %",
     "enrich": "Scored 0 messages %",
     "sync": "%: 0 deleted, 0 edited, reactions updated on 0",
+    "topics": "%: 0 threads embedded, 0 summaries written",
 }
 
 
@@ -257,6 +258,7 @@ def _run_exclude(factory: sessionmaker, params: dict, report: Progress) -> str:
         f"Excluded {uid}: removed {removed['messages']} messages and "
         f"{removed['interactions']} replies/mentions/reactions and "
         f"{removed['reactions']} of their reactions"
+        + (f"; cleared {removed['topics']} context topics" if removed.get("topics") else "")
     )
 
 
@@ -272,6 +274,54 @@ def _run_include(factory: sessionmaker, params: dict, report: Progress) -> str:
     return f"{uid} is no longer excluded (old messages return only with a full re-scrape)"
 
 
+def _embedding_backend(settings):
+    from tg_analyst.enrich.embeddings import TransformersEmbedding
+
+    if not settings.hf_embedding_model:
+        raise RuntimeError("Context topics are off: HF_EMBEDDING_MODEL is empty")
+    return TransformersEmbedding(settings.hf_embedding_model)
+
+
+def _run_topics(factory: sessionmaker, params: dict, report: Progress) -> str:
+    from tg_analyst.config import get_settings
+    from tg_analyst.enrich import summaries
+    from tg_analyst.enrich.topics_job import run_topics
+    from tg_analyst.storage.models import Group
+
+    settings = get_settings()
+    backend = _embedding_backend(settings)
+    summarizer = summaries.from_settings(settings)
+    with factory() as session:
+        gids = (
+            [int(params["group"])]
+            if params.get("group")
+            else list(session.scalars(select(Group.group_id)))
+        )
+        totals = {"topics": 0, "threads": 0, "embedded": 0, "summarized": 0}
+        for i, gid in enumerate(gids):
+
+            def scaled(fraction, detail, i=i):
+                share = None if fraction is None else (i + fraction) / len(gids)
+                report(share, detail if len(gids) == 1 else f"Group {i + 1}/{len(gids)}: {detail}")
+
+            stats = run_topics(
+                session,
+                gid,
+                backend,
+                settings.topic_threshold,
+                summarizer,
+                settings.topic_summary_top,
+                scaled,
+            )
+            for key in totals:
+                totals[key] += getattr(stats, key)
+    where = f"from {gids[0]}" if len(gids) == 1 else f"in {len(gids)} groups"
+    return (
+        f"{totals['topics']} topics in {totals['threads']} threads {where}: "
+        f"{totals['embedded']} threads embedded, {totals['summarized']} summaries written"
+    )
+
+
 RUNNERS = {
     "backfill": _run_backfill,
     "enrich": _run_enrich,
@@ -280,6 +330,7 @@ RUNNERS = {
     "exclude": _run_exclude,
     "sync": _run_sync,
     "include": _run_include,
+    "topics": _run_topics,
 }
 
 
@@ -311,11 +362,13 @@ def schedule_due(
     refresh_minutes: int,
     reconcile_hours: int,
     reconcile_days: int,
+    topics_hours: int = 0,
 ) -> list[Job]:
     """Queue periodic work for every group; returns the jobs created.
 
     - incremental back-fill + enrichment every ``refresh_minutes``
     - re-check of the last ``reconcile_days`` against Telegram every ``reconcile_hours``
+    - context topics rebuilt every ``topics_hours``
 
     A job is due when no job of that kind for the group was created within the interval,
     which also means nothing is queued twice. 0 disables a schedule. State lives in the
@@ -338,6 +391,14 @@ def schedule_due(
                 "sync",
                 timedelta(hours=reconcile_hours),
                 lambda g: {"group": str(g), "days": reconcile_days, "scheduled": True},
+            )
+        )
+    if topics_hours > 0:
+        plans.append(
+            (
+                "topics",
+                timedelta(hours=topics_hours),
+                lambda g: {"group": str(g), "scheduled": True},
             )
         )
     created = []
@@ -384,6 +445,7 @@ def work_forever(factory: sessionmaker, poll_seconds: float = 2.0) -> None:
                     settings.auto_refresh_minutes,
                     settings.auto_reconcile_hours,
                     settings.reconcile_days,
+                    settings.auto_topics_hours,
                 ):
                     log.info("Scheduled job %s (%s) %s", job.id, job.kind, job.params)
         if not run_one(factory):

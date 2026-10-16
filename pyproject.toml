@@ -24,12 +24,18 @@ web = [
     "pandas>=2.1",
     "networkx>=3.2",
     "snowballstemmer>=2.2",
+    # Context topics: clustering of thread embeddings (the worker runs it, tests too).
+    "scikit-learn>=1.4",
 ]
 hf = [
     "transformers>=4.40",
     "torch>=2.2",
     "sentencepiece>=0.2",
     "protobuf>=4",
+]
+# Claude summaries of context topics (optional; off without ANTHROPIC_API_KEY).
+llm = [
+    "anthropic>=0.40",
 ]
 dev = [
     "pytest>=8",

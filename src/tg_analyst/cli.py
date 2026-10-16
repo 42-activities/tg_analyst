@@ -117,6 +117,16 @@ def cmd_enrich(args) -> None:
     log.info("Enrichment done: %d scored, %d without text", stats.scored, stats.skipped)
 
 
+def cmd_topics(args) -> None:
+    from tg_analyst import jobs
+
+    params = {"group": str(args.group_id)} if args.group_id else {}
+    result = jobs.RUNNERS["topics"](
+        _session_factory(), params, lambda _fraction, detail: log.info("%s", detail)
+    )
+    log.info("%s", result)
+
+
 def cmd_login(_args) -> None:
     client = _client()
 
@@ -242,6 +252,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--force", action="store_true", help="re-score everything")
     p.set_defaults(func=cmd_enrich)
+
+    p = sub.add_parser("topics", help="find conversation topics (threads, embeddings, clusters)")
+    p.add_argument("--group-id", type=int, help="default: every group")
+    p.set_defaults(func=cmd_topics)
 
     return parser
 

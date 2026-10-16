@@ -50,3 +50,54 @@ def engine(database_url):
 def session(engine):
     with make_session_factory(engine)() as s:
         yield s
+
+
+THEMES = {
+    "visa": [
+        "visa appointment at the embassy is booked",
+        "the embassy asked for another visa form",
+        "visa queue at the embassy took hours",
+    ],
+    "python": [
+        "python release notes look good",
+        "python packaging with the new release",
+        "python typing in the release is great",
+    ],
+}
+
+
+@pytest.fixture
+def themed_group(session):
+    """A group with reply-chain threads about two themes across two quarters.
+
+    Returns (group_id, {theme: [root ids]}). Synthetic: no real names or messages.
+    """
+    from datetime import datetime, timedelta
+
+    from tg_analyst.storage import repository as repo
+    from tg_analyst.storage.records import GroupRecord, MessageRecord, UserRecord
+
+    gid = -1009000000001
+    repo.upsert_group(session, GroupRecord(gid, "Themed Group", "themed"))
+    users = [UserRecord(500 + i, f"member{i}", f"Member Name {i}") for i in range(6)]
+    repo.upsert_users(session, [(u, datetime(2026, 1, 1)) for u in users])
+    records, roots, mid = [], {theme: [] for theme in THEMES}, 0
+    for day in range(0, 180, 15):  # 12 days, two quarters
+        for theme, lines in THEMES.items():
+            ts = datetime(2026, 1, 2) + timedelta(days=day, hours=len(records) % 7)
+            for i, line in enumerate(lines):
+                mid += 1
+                records.append(
+                    MessageRecord(
+                        gid,
+                        mid,
+                        ts + timedelta(minutes=10 * i),
+                        sender_id=users[(mid + i) % 6].user_id,
+                        text=f"@member1 {line}" if i == 1 else line,
+                        reply_to_msg_id=mid - 1 if i else None,
+                    )
+                )
+            roots[theme].append(mid - 2)
+    repo.upsert_messages(session, records)
+    session.commit()
+    return gid, roots

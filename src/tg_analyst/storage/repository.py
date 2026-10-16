@@ -12,12 +12,14 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, aliased
 
 from tg_analyst.storage.models import (
+    ContextTopic,
     Enrichment,
     ExcludedUser,
     Group,
     Interaction,
     Message,
     Reaction,
+    ThreadEmbedding,
     User,
 )
 from tg_analyst.storage.records import (
@@ -399,8 +401,9 @@ def exclude_user(session: Session, user_id: int, note: str | None = None) -> dic
     """Opt a member out: record the exclusion and delete everything stored about their messages.
 
     Removes their messages (enrichment and edges cascade), their reactions, and
-    replies/mentions/reactions that point at them. Ingestion skips excluded senders from
-    then on. Returns row counts.
+    replies/mentions/reactions that point at them, and the context topics (threads,
+    embeddings, summaries) of every group they wrote in: the next topics job rebuilds
+    those without them. Ingestion skips excluded senders from then on. Returns row counts.
     """
     session.execute(
         _insert(session, ExcludedUser)
@@ -412,9 +415,17 @@ def exclude_user(session: Session, user_id: int, note: str | None = None) -> dic
             or_(Interaction.target_user_id == user_id, Interaction.source_user_id == user_id)
         )
     ).rowcount
+    groups = select(Message.group_id).where(Message.sender_id == user_id).distinct()
+    topics = session.execute(delete(ContextTopic).where(ContextTopic.group_id.in_(groups))).rowcount
+    session.execute(delete(ThreadEmbedding).where(ThreadEmbedding.group_id.in_(groups)))
     messages = session.execute(delete(Message).where(Message.sender_id == user_id)).rowcount
     reactions = session.execute(delete(Reaction).where(Reaction.user_id == user_id)).rowcount
-    return {"messages": messages, "interactions": edges, "reactions": reactions}
+    return {
+        "messages": messages,
+        "interactions": edges,
+        "reactions": reactions,
+        "topics": topics,
+    }
 
 
 def include_user(session: Session, user_id: int) -> bool:

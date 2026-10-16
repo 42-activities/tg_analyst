@@ -5,9 +5,10 @@ import pandas as pd
 
 from tg_analyst.analytics.threads import (
     build_threads,
-    content_key,
+    content_keys,
     thread_table,
     thread_text,
+    thread_texts,
 )
 
 T0 = datetime(2026, 3, 1, 12, 0)
@@ -138,7 +139,7 @@ def test_thread_text_uses_per_thread_letters_and_masks_names():
             (4, 123456, 30, 2, "thanks"),
         ]
     )
-    text = thread_text(msgs, [1, 2, 3, 4])
+    text = thread_text(msgs)
     assert text == "A: @user look at http\nB: ok\nA: thanks"
     assert "123456" not in text and "alice" not in text
 
@@ -146,17 +147,31 @@ def test_thread_text_uses_per_thread_letters_and_masks_names():
 def test_thread_text_keeps_first_and_longest_messages_when_truncated():
     rows = [(1, 1, 0, None, "start")]
     rows += [(i, i % 3, i, 1, "x" * (10 if i != 6 else 80)) for i in range(2, 10)]
-    text = thread_text(frame(rows), range(1, 10), max_chars=140)
+    text = thread_text(frame(rows), max_chars=140)
     lines = text.split("\n")
     assert lines[0] == "A: start"
     assert any(len(line) > 80 for line in lines)
     assert len(text) <= 140
 
 
-def test_content_key_changes_with_text_and_membership():
-    msgs = frame([(1, 1, 0, None, "a"), (2, 2, 1, 1, "b")])
-    key = content_key(msgs, [1, 2])
-    assert key == content_key(msgs, [2, 1])
-    assert key != content_key(msgs, [1])
-    edited = msgs.assign(text=["a", "b (edited)"])
-    assert key != content_key(edited, [1, 2])
+def test_texts_and_content_keys_per_thread():
+    msgs = frame(
+        [
+            (1, 1, 0, None, "a"),
+            (2, 2, 1, 1, "b"),
+            (3, 3, 2, 2, "c"),
+            (4, 4, 500, None, "x"),
+            (5, 5, 501, 4, "y"),
+            (6, 6, 502, 5, "z"),
+        ]
+    )
+    membership = build_threads(msgs)
+    assert thread_texts(msgs, membership) == {1: "A: a\nB: b\nC: c", 4: "A: x\nB: y\nC: z"}
+    assert list(thread_texts(msgs, membership, roots=[4])) == [4]
+    keys = content_keys(msgs, membership)
+    assert list(keys.index) == [1, 4] and keys[1] != keys[4]
+    edited = msgs.assign(text=["a", "b (edited)", "c", "x", "y", "z"])
+    changed = content_keys(edited, membership)
+    assert changed[1] != keys[1] and changed[4] == keys[4]
+    shorter = content_keys(msgs, membership[membership["message_id"] != 3])
+    assert shorter[1] != keys[1]

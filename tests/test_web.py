@@ -175,3 +175,50 @@ def test_jobs_page_names_groups_and_hides_quiet_runs(db_url):
     assert any("1 run that found nothing new is hidden" in c.value for c in at.caption)
     at.toggle[0].set_value(True).run()
     assert len(at.dataframe[0].value) == 3
+
+
+def test_conversation_topics_view(db_url, session, themed_group):
+    from tg_analyst.enrich.embeddings import FakeEmbedding
+    from tg_analyst.enrich.summaries import Summarizer
+    from tg_analyst.enrich.topics_job import run_topics
+
+    class Client:
+        def __init__(self):
+            self.messages = self
+
+        def create(self, **kwargs):
+            from types import SimpleNamespace
+
+            reply = '{"title": "Visa [paperwork](http://x)", "summary": "Queues at the *embassy*."}'
+            return SimpleNamespace(content=[SimpleNamespace(text=reply)])
+
+    gid, _ = themed_group
+    at = _app()
+    radio = next(r for r in at.radio if r.label == "Topics by")
+    radio.set_value("Conversations").run()
+    assert any("haven't been found" in i.value for i in at.info)
+
+    enrich(session, VaderBackend())
+    run_topics(session, gid, FakeEmbedding(), 0.3, Summarizer(Client(), "fake"), summary_top=1)
+    _clear_caches()
+    at = _app()
+    next(r for r in at.radio if r.label == "Topics by").set_value("Conversations").run()
+    assert not at.exception, at.exception
+    assert any(sub.value == "Topics" for sub in at.subheader)
+    text = " ".join(m.value for m in at.markdown)
+    assert "Visa \\[paperwork\\]\\(http://x\\)" in text  # model output is shown literally
+    assert "\\*embassy\\*" in text
+    assert "**member0**" in text and "@member1" in text  # transcripts show names...
+    at.sidebar.toggle[0].set_value(True).run()  # ...unless pseudonymized
+    assert not at.exception, at.exception
+    text = " ".join(m.value for m in at.markdown)
+    assert "member0" not in text and "member1" not in text and "**Member 1**" in text
+
+
+def test_jobs_page_queues_topics(db_url, themed_group):
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.switch_page("views/jobs.py")
+    at.run()
+    button = next(b for b in at.button if b.label == "Find conversation topics")
+    button.click().run()
+    assert any("Queued job" in s.value for s in at.success)

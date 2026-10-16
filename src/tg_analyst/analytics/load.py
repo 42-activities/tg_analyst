@@ -6,7 +6,16 @@ import pandas as pd
 from sqlalchemy import Engine, and_, func, select
 
 from tg_analyst.enrich.reactions import emoji_tone
-from tg_analyst.storage.models import Enrichment, Group, Interaction, Message, Reaction, User
+from tg_analyst.storage.models import (
+    ContextTopic,
+    Enrichment,
+    Group,
+    Interaction,
+    Message,
+    Reaction,
+    ThreadEmbedding,
+    User,
+)
 
 
 def groups(engine: Engine) -> pd.DataFrame:
@@ -51,6 +60,9 @@ def messages(engine: Engine, group_id: int, start: datetime, end: datetime) -> p
     )
     df = pd.read_sql(stmt, engine, parse_dates=["timestamp"])
     df["is_bot"] = df["is_bot"].fillna(False).astype(bool)
+    # All-NULL columns (a group not scored yet) would otherwise load as dtype object.
+    for column in ("sentiment_score", "insult", "obscenity", "threat", "reaction_count"):
+        df[column] = df[column].astype(float)
     df["name"] = df["username"].fillna(df["display_name"]).fillna(df["sender_id"].astype(str))
     return df
 
@@ -149,3 +161,36 @@ def date_range(engine: Engine, group_id: int) -> tuple[datetime | None, datetime
     with engine.connect() as conn:
         first, last = conn.execute(stmt).one()
     return first, last
+
+
+def context_topics(engine: Engine, group_id: int) -> pd.DataFrame:
+    """Stored context topics of a group (``topics`` job), most messages first."""
+    stmt = (
+        select(
+            ContextTopic.topic_id,
+            ContextTopic.label,
+            ContextTopic.title,
+            ContextTopic.summary,
+            ContextTopic.centre_root,
+            ContextTopic.edge_roots,
+            ContextTopic.thread_roots,
+            ContextTopic.created_at,
+        )
+        .where(ContextTopic.group_id == group_id)
+        .order_by(ContextTopic.topic_id)
+    )
+    return pd.read_sql(stmt, engine)
+
+
+def thread_membership(engine: Engine, group_id: int) -> pd.DataFrame:
+    """``message_id -> root_id`` of the group's embedded threads."""
+    stmt = select(ThreadEmbedding.root_message_id, ThreadEmbedding.message_ids).where(
+        ThreadEmbedding.group_id == group_id
+    )
+    rows = pd.read_sql(stmt, engine)
+    if rows.empty:
+        return pd.DataFrame({"message_id": [], "root_id": []}, dtype="int64")
+    out = rows.explode("message_ids").rename(
+        columns={"message_ids": "message_id", "root_message_id": "root_id"}
+    )
+    return out[["message_id", "root_id"]].astype("int64").reset_index(drop=True)

@@ -22,11 +22,22 @@ class Settings(BaseSettings):
     # Insult/obscenity/threat model, run with the "hf" sentiment backend ("" disables).
     hf_toxicity_model: str = "cointegrated/rubert-tiny-toxicity"
 
+    # Context topics (docs/CONTEXT_TOPICS.md): thread embedding model ("" disables), the
+    # clustering distance threshold, and Claude summaries of the top topics (off without
+    # an API key; the text of three pseudonymized threads per topic goes to Anthropic).
+    hf_embedding_model: str = "cointegrated/rubert-tiny2"
+    topic_threshold: float = 0.2
+    anthropic_api_key: SecretStr | None = None
+    topic_summary_model: str = "claude-haiku-5-5"
+    topic_summary_top: int = 25
+
     # Worker schedules (0 disables): incremental back-fill + enrichment of every group, and
     # re-checking the last RECONCILE_DAYS against Telegram for edits and deletions.
     auto_refresh_minutes: int = 60
     auto_reconcile_hours: int = 24
     reconcile_days: int = 30
+    # Rebuild context topics of every group (0 = only when queued by hand).
+    auto_topics_hours: int = 0
 
     def require_telegram(self) -> tuple[int, str]:
         """Return (api_id, api_hash) or raise if credentials are missing."""

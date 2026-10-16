@@ -21,7 +21,7 @@ from tg_analyst.storage.models import Base, Message
 from tg_analyst.storage.records import GroupRecord, MessageRecord
 
 # Tables introduced by revisions after 0001_baseline.
-LATER_TABLES = {"excluded_users", "reactions"}
+LATER_TABLES = {"excluded_users", "reactions", "thread_embeddings", "context_topics"}
 # Columns that later revisions added to baseline-era tables.
 LATER_COLUMNS = {
     "messages": ["reaction_count"],

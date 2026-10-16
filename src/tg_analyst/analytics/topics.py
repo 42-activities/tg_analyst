@@ -4,6 +4,7 @@ A topic is a stemmed keyword (see ``enrich.keywords``). Everything works on the
 ``message_terms`` frame: one row per (message, keyword). Pure functions, no I/O.
 """
 
+import numpy as np
 import pandas as pd
 
 from tg_analyst.analytics.metrics import human_messages
@@ -174,3 +175,32 @@ def member_topics(
     mine = mine[mine["lift"] > 1].reset_index()
     mine["topic"] = mine["stem"].map(topic_labels(terms))
     return mine.sort_values(["messages", "stem"], ascending=[False, True]).head(n)[cols]
+
+
+def distinctive_terms(
+    terms: pd.DataFrame, message_topic: pd.Series, n: int = 4, min_messages: int = 2
+) -> pd.Series:
+    """Label per cluster of messages: its most distinctive keywords, e.g. "виза, банк, счёт".
+
+    ``message_topic`` maps message id -> cluster id. Keywords are weighted by class-based
+    TF-IDF: frequent in the cluster, rare across the other clusters. A keyword must occur
+    in ``min_messages`` of the cluster's messages.
+    """
+    hits = terms.assign(cluster=terms["message_id"].map(message_topic)).dropna(subset="cluster")
+    if hits.empty:
+        return pd.Series(dtype=object)
+    counts = hits.groupby(["cluster", "stem"])["message_id"].nunique().rename("n").reset_index()
+    counts = counts[counts["n"] >= min_messages]
+    if counts.empty:
+        return pd.Series(dtype=object)
+    per_cluster = hits.groupby("cluster")["message_id"].nunique()
+    stem_total = counts.groupby("stem")["n"].sum()
+    average = per_cluster.mean()
+    counts["score"] = (counts["n"] / counts["cluster"].map(per_cluster)) * np.log(
+        1 + average / counts["stem"].map(stem_total)
+    )
+    words = topic_labels(hits)
+    best = counts.sort_values(["score", "stem"], ascending=[False, True]).groupby("cluster")
+    labels = best["stem"].apply(lambda stems: ", ".join(words[s] for s in stems.head(n)))
+    labels.index = labels.index.astype(int)
+    return labels

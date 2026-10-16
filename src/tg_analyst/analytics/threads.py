@@ -131,15 +131,15 @@ def _speaker(index: int) -> str:
     return name
 
 
-def thread_text(msgs: pd.DataFrame, message_ids, max_chars: int = 2000) -> str:
-    """The thread as ``A: ...`` lines, safe to embed or send to a model.
+def thread_text(rows: pd.DataFrame, max_chars: int = 2000) -> str:
+    """One thread's messages as ``A: ...`` lines, safe to embed or send to a model.
 
     Speakers are per-thread letters (never ids or names), @mentions are masked and URLs
     replaced (``clean_text``). Media-only messages are skipped. When the thread is longer
-    than ``max_chars``, the first messages are kept, then the longest of the rest, in
-    their original order.
+    than ``max_chars``, the first three messages are kept, then the longest of the rest,
+    in their original order.
     """
-    rows = msgs[msgs["message_id"].isin(set(message_ids))].sort_values("message_id")
+    rows = rows.sort_values("message_id")
     speakers: dict[int, str] = {}
     lines: list[tuple[int, str]] = []
     for position, (sender, text) in enumerate(zip(rows["sender_id"], rows["text"], strict=True)):
@@ -164,10 +164,29 @@ def thread_text(msgs: pd.DataFrame, message_ids, max_chars: int = 2000) -> str:
     return "\n".join(line for _, line in sorted(head))
 
 
-def content_key(msgs: pd.DataFrame, message_ids) -> str:
-    """A hash of the thread's message ids and texts, to detect threads that changed."""
-    rows = msgs[msgs["message_id"].isin(set(message_ids))].sort_values("message_id")
-    digest = hashlib.sha1()
-    for message_id, text in zip(rows["message_id"], rows["text"], strict=True):
-        digest.update(f"{message_id}\x00{text if isinstance(text, str) else ''}\x01".encode())
-    return digest.hexdigest()
+def _by_thread(msgs: pd.DataFrame, membership: pd.DataFrame, roots=None):
+    if roots is not None:
+        membership = membership[membership["root_id"].isin(set(roots))]
+    frame = membership.merge(msgs[["message_id", "sender_id", "text"]], on="message_id")
+    return frame.sort_values("message_id").groupby("root_id", sort=True)
+
+
+def thread_texts(
+    msgs: pd.DataFrame, membership: pd.DataFrame, roots=None, max_chars: int = 2000
+) -> dict[int, str]:
+    """``root_id -> thread_text`` for every thread (or only ``roots``)."""
+    return {
+        int(root): thread_text(rows, max_chars)
+        for root, rows in _by_thread(msgs, membership, roots)
+    }
+
+
+def content_keys(msgs: pd.DataFrame, membership: pd.DataFrame) -> pd.Series:
+    """``root_id -> hash`` of the thread's message ids and texts, to detect changed threads."""
+    if membership.empty:
+        return pd.Series(dtype=object)
+    frame = membership.merge(msgs[["message_id", "text"]], on="message_id")
+    frame = frame.sort_values("message_id")
+    parts = frame["message_id"].astype(str) + "\x00" + frame["text"].fillna("").astype(str)
+    joined = parts.groupby(frame["root_id"]).agg("\x01".join)
+    return joined.map(lambda value: hashlib.sha1(value.encode()).hexdigest())

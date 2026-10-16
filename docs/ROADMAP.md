@@ -64,7 +64,7 @@ Goal: a Streamlit app over M3.
 - [x] Toxicity scores (`0004_toxicity_labels`): insults and threats count as hostile, swearing alone doesn't; insult KPI, member columns, toxicity filter, labels in conflict transcripts
 - [x] Reaction edges: `reactions` table (`0003_reactions`), emoji tone, back-fill/reconcile/listener, full list via `GetMessageReactionsList` when the summary is partial, "Count reactions" toggle, reaction KPI and emoji chart
 - [x] Topic extraction, keyword version: stemmed keywords, tone vs. group, trending, per-topic drill-down, member topics (Topics tab, member page)
-- [ ] Model-based topics (BERTopic or embedding clusters), only if keywords fall short. Could share embeddings with M6.
+- [ ] Model-based topics: conversation threads → `rubert-tiny2` embeddings → clusters → Claude summaries (`docs/CONTEXT_TOPICS.md`). Built; tick after the rollout (θ tuned on 42, then all groups).
 - [x] Docker image; arm64 auto-deploy on push to `main` with rollback
 - [x] Public URL with HTTPS and basic auth (https://tg-analyst.naurzalinov.me)
 - [x] Sync with Telegram: apply edits and deletions (listener events + periodic re-check of stored messages)

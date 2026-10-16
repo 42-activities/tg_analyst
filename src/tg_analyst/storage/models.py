@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import ARRAY, REAL
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -179,3 +180,56 @@ class ExcludedUser(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     note: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class ThreadEmbedding(Base):
+    """A conversation thread (``analytics.threads``) and its embedding vector.
+
+    Derived from messages: the row cascades away with its root message, and the topics
+    job re-embeds a thread whose messages changed (``content_key``) or whose model did.
+    """
+
+    __tablename__ = "thread_embeddings"
+
+    group_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    root_message_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    message_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer))
+    content_key: Mapped[str] = mapped_column(String(40))
+    model_version: Mapped[str] = mapped_column(String(255))
+    vector: Mapped[list[float]] = mapped_column(ARRAY(REAL))
+    start: Mapped[datetime] = mapped_column(DateTime)
+    end: Mapped[datetime] = mapped_column(DateTime)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["group_id", "root_message_id"],
+            ["messages.group_id", "messages.message_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+
+class ContextTopic(Base):
+    """A cluster of similar threads in one group, rebuilt as a whole by the topics job.
+
+    ``summary_key`` identifies the representative threads' content, so an unchanged topic
+    keeps its summary instead of being sent to the model again.
+    """
+
+    __tablename__ = "context_topics"
+
+    group_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    topic_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    model_version: Mapped[str] = mapped_column(String(255))
+    threshold: Mapped[float] = mapped_column(Float)
+    label: Mapped[str] = mapped_column(String(255))
+    title: Mapped[str | None] = mapped_column(String(255))
+    summary: Mapped[str | None] = mapped_column(Text)
+    summary_model: Mapped[str | None] = mapped_column(String(64))
+    summary_key: Mapped[str | None] = mapped_column(String(40))
+    centre_root: Mapped[int] = mapped_column(Integer)
+    edge_roots: Mapped[list[int]] = mapped_column(ARRAY(Integer))
+    thread_roots: Mapped[list[int]] = mapped_column(ARRAY(Integer))
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+    __table_args__ = (ForeignKeyConstraint(["group_id"], ["groups.group_id"], ondelete="CASCADE"),)

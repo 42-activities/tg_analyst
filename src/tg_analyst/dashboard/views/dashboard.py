@@ -9,10 +9,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from tg_analyst.analytics import conflict, metrics, topics
+from tg_analyst.analytics import conflict, context_topics, metrics, topics
 from tg_analyst.dashboard.common import (
     MENTION,
     TONE_SCALE,
+    cached_context_topics,
     cached_date_range,
     cached_edges,
     cached_groups,
@@ -98,10 +99,20 @@ def dashboard_page() -> None:
     with tabs[4]:
         _newcomers_tab(names, rel)
     with tabs[5]:
-        terms = cached_terms(group_id, start, end)
-        if hide_names:
-            terms = topics.without_names(terms, [*msgs["username"], *msgs["display_name"]])
-        _topics_tab(msgs, terms, names, hide_names)
+        mode = st.radio(
+            "Topics by",
+            ["Keywords", "Conversations"],
+            horizontal=True,
+            help="Keywords: the most used words. Conversations: whole threads grouped by "
+            "meaning with a small language model, with a title and summary per topic.",
+        )
+        if mode == "Conversations":
+            _conversations_tab(group_id, msgs, names, hide_names)
+        else:
+            terms = cached_terms(group_id, start, end)
+            if hide_names:
+                terms = topics.without_names(terms, [*msgs["username"], *msgs["display_name"]])
+            _topics_tab(msgs, terms, names, hide_names)
     with tabs[6]:
         _messages_tab(msgs, names, hide_names)
 
@@ -748,6 +759,101 @@ def _topics_tab(msgs: pd.DataFrame, terms: pd.DataFrame, names: dict, hide_names
                 who_name = escape_md(names.get(row.sender_id, str(row.sender_id)))
                 st.caption(f"**{who_name}** · {row.timestamp:%Y-%m-%d %H:%M}{tone}")
                 st.markdown(show_text(row.text, hide_names, limit=600))
+
+
+def _conversations_tab(group_id: int, msgs: pd.DataFrame, names: dict, hide_names: bool) -> None:
+    stored, membership = cached_context_topics(group_id)
+    if stored.empty:
+        st.info(
+            "Conversation topics haven't been found for this group yet. Queue **Find "
+            "conversation topics** on the **Jobs** page."
+        )
+        return
+    membership = membership[membership["message_id"].isin(msgs["message_id"])]
+    assignment = stored.explode("thread_roots").set_index("thread_roots")["topic_id"]
+    assignment.index = assignment.index.astype("int64")
+    table = context_topics.topic_table(msgs, membership, assignment)
+    if table.empty:
+        st.info("No conversation topics in this period.")
+        return
+    table = table.merge(stored, on="topic_id")
+    table["name"] = table["title"].fillna(table["label"])
+    st.caption(
+        f"{len(table)} topics, found {stored['created_at'].max():%Y-%m-%d %H:%M} UTC: "
+        "conversation threads (reply chains and quick follow-ups) grouped by meaning. "
+        "Counts cover the selected period. Tone is **relative to the group's usual tone**."
+    )
+    top = table.head(30)
+    spread = max(0.1, float(top["tone_vs_group"].abs().max(skipna=True) or 0.1))
+    st.plotly_chart(
+        px.scatter(
+            top.assign(insult_share=top["insult_share"] * 100),
+            x="tone_vs_group",
+            y="messages",
+            size="members",
+            color="insult_share",
+            color_continuous_scale="Reds",
+            hover_name="name",
+            hover_data={"threads": True, "members": True, "tone_vs_group": ":+.2f"},
+            labels={
+                "tone_vs_group": "Tone vs group",
+                "messages": "Messages",
+                "insult_share": "Insults %",
+            },
+            log_y=True,
+            title="Topics by size and tone",
+        )
+        .update_xaxes(range=[-spread * 1.2, spread * 1.2])
+        .add_vline(x=0, line_dash="dot", line_color="grey"),
+        width="stretch",
+    )
+
+    timeline = context_topics.topic_timeline(
+        msgs, membership, assignment[assignment.isin(table["topic_id"].head(10))]
+    )
+    if timeline["period"].nunique() > 1:
+        timeline = timeline.merge(table[["topic_id", "name"]], on="topic_id")
+        st.plotly_chart(
+            px.area(
+                timeline,
+                x="period",
+                y="messages",
+                color="name",
+                labels={"period": "", "messages": "Messages", "name": "Topic"},
+                title="Top 10 topics per quarter",
+            ),
+            width="stretch",
+        )
+
+    st.subheader("Topics")
+    threads = membership.merge(msgs, on="message_id")
+    for row in table.head(20).itertuples():
+        with st.container(border=True):
+            st.markdown(f"**{show_text(row.name, hide_names)}**")
+            if isinstance(row.summary, str):
+                st.markdown(show_text(row.summary, hide_names))
+            tone = "–" if pd.isna(row.tone_vs_group) else f"{row.tone_vs_group:+.2f}"
+            st.caption(
+                f"{row.messages:,} messages in {row.threads:,} threads · {row.members:,} "
+                f"members · tone vs group {tone} · {row.first_seen:%Y-%m-%d} – "
+                f"{row.last_seen:%Y-%m-%d}"
+                + (f" · keywords: {escape_md(row.label)}" if isinstance(row.title, str) else "")
+            )
+            with st.expander("Example conversations"):
+                for root in [row.centre_root, *row.edge_roots]:
+                    _thread_transcript(threads[threads["root_id"] == root], names, hide_names)
+
+
+def _thread_transcript(rows: pd.DataFrame, names: dict, hide_names: bool) -> None:
+    if rows.empty:
+        st.caption("_This conversation is outside the selected period._")
+        return
+    rows = rows.sort_values("message_id")
+    st.caption(f"{rows['timestamp'].min():%Y-%m-%d %H:%M} · {len(rows)} messages")
+    for row in rows.itertuples():
+        who = names.get(row.sender_id, str(row.sender_id))
+        st.markdown(f"**{escape_md(who)}**: {show_text(row.text, hide_names, limit=500)}")
+    st.divider()
 
 
 def _messages_tab(msgs: pd.DataFrame, names: dict, hide_names: bool = False) -> None:

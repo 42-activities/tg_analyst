@@ -71,6 +71,7 @@ def jobs_page() -> None:
             st.toast(f"Queued demo data job #{jobs.enqueue(s, 'seed').id}")
 
     _sync_controls()
+    _topic_controls()
     _exclusions()
 
 
@@ -278,6 +279,41 @@ def _sync_controls() -> None:
                         "days": 30 if scope == "Last 30 days" else None,
                     },
                 )
+            st.success(f"Queued job #{job.id}")
+
+
+def _topic_controls() -> None:
+    settings = get_settings()
+    st.subheader("Conversation topics")
+    if not settings.hf_embedding_model:
+        st.caption("Off: HF_EMBEDDING_MODEL is empty.")
+        return
+    summaries = (
+        f"titles and summaries of the {settings.topic_summary_top} largest topics by "
+        f"{settings.topic_summary_model} (three anonymized example conversations per topic "
+        "are sent to Anthropic)"
+        if settings.anthropic_api_key and settings.anthropic_api_key.get_secret_value()
+        else "keyword labels (no Claude summaries: ANTHROPIC_API_KEY is empty)"
+    )
+    schedule = (
+        f"Rebuilt every {settings.auto_topics_hours} h for every group. "
+        if settings.auto_topics_hours
+        else "Run by hand. "
+    )
+    st.caption(
+        "Groups conversation threads by meaning: new or changed threads are embedded with "
+        f"{settings.hf_embedding_model}, then clustered (distance {settings.topic_threshold}), "
+        f"with {summaries}. {schedule}See the **Conversations** view of the Topics tab."
+    )
+    with session_factory()() as s:
+        groups = s.execute(select(Group.group_id, Group.title)).all()
+    if not groups:
+        return
+    with st.form("topics"):
+        group = st.selectbox("Group", groups, format_func=lambda g: g.title or str(g.group_id))
+        if st.form_submit_button("Find conversation topics"):
+            with session_factory()() as s:
+                job = jobs.enqueue(s, "topics", {"group": str(group.group_id)})
             st.success(f"Queued job #{job.id}")
 
 
