@@ -7,7 +7,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, case, delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, aliased
 
@@ -254,6 +254,13 @@ def _reaction_edges(session: Session, group_id: int, *where) -> list[dict]:
     ]
 
 
+def refresh_statistics(session: Session) -> None:
+    """ANALYZE the tables a back-fill grows, so the planner sees the new rows."""
+    for table in ("messages", "reactions", "interactions"):
+        session.execute(text(f"ANALYZE {table}"))
+    session.commit()
+
+
 def store_reactions(
     session: Session,
     group_id: int,
@@ -310,7 +317,15 @@ def store_reactions(
             Interaction.message_id.in_(ids),
         )
     )
-    _insert_edges(session, _reaction_edges(session, group_id, Message.message_id.in_(ids)))
+    # Filter both sides of the join by id: with only Message filtered, a group whose rows
+    # the planner statistics haven't seen yet (a fresh back-fill) got a nested loop over
+    # all its reactions x messages, ~20 s per batch.
+    _insert_edges(
+        session,
+        _reaction_edges(
+            session, group_id, Reaction.message_id.in_(ids), Message.message_id.in_(ids)
+        ),
+    )
     return len(rows)
 
 

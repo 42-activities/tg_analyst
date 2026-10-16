@@ -27,6 +27,10 @@ from tg_analyst.storage.records import MessageRecord, ReactionSummary, UserRecor
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 500
+# Refresh planner statistics when a back-fill crosses these message counts. Autovacuum
+# lags behind a fast import, and with stale statistics PostgreSQL believes a new group has
+# ~1 row and picks plans that scan the whole group per batch (20-45 s instead of ~5 s).
+ANALYZE_AT = (2_000, 20_000, 200_000)
 
 
 def make_client(session_path: str, api_id: int, api_hash: str) -> TelegramClient:
@@ -192,6 +196,8 @@ async def backfill(
                 skipped += dropped
                 total += count
                 log.info("Stored %d messages", total - skipped)
+                if any(total - count < at <= total for at in ANALYZE_AT):
+                    repo.refresh_statistics(session)
                 done = ratio(msg.id - first_id, top_id - first_id)
                 if limit:
                     done = max(done or 0.0, total / limit)

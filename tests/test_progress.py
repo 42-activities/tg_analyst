@@ -122,9 +122,13 @@ def fake_group(monkeypatch):
     monkeypatch.setattr(service, "BATCH_SIZE", 100)
 
 
-async def test_backfill_progress_follows_message_ids(engine, session, fake_group):
+async def test_backfill_progress_follows_message_ids(engine, session, fake_group, monkeypatch):
     repo.upsert_group(session, GroupRecord(GID, "g"))
     session.commit()
+    analyzed = []
+    real_refresh = repo.refresh_statistics
+    monkeypatch.setattr(service, "ANALYZE_AT", (250, 1200))
+    monkeypatch.setattr(repo, "refresh_statistics", lambda s: analyzed.append(1) or real_refresh(s))
     # Ids 1..1000, then a gap; the newest message is 2000.
     tg = FakeHistory(list(range(1, 1001)) + list(range(1500, 2001)))
     seen = []
@@ -132,6 +136,7 @@ async def test_backfill_progress_follows_message_ids(engine, session, fake_group
         tg, make_session_factory(engine), str(GID), progress=lambda f, d: seen.append((f, d))
     )
     assert n == 1501
+    assert len(analyzed) == 2  # once per threshold crossed, not per batch
     fractions = [f for f, _ in seen if f is not None]
     assert fractions == sorted(fractions) and fractions[0] == 0.0
     assert fractions[1] == pytest.approx(99 / 1999)  # first batch ends at id 100
