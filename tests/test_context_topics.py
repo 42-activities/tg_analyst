@@ -69,10 +69,10 @@ def test_merge_links_the_same_topic_across_quarters():
 
 
 def test_representatives_are_distinct_and_start_at_the_centre():
-    vectors = np.array([[1, 0], [0.9, 0.3], [0.9, -0.3], [0.8, -0.6]], dtype=np.float32)
+    vectors = np.array([[1, 0], [0.8, 0.6], [0.6, -0.8], [0.95, 0.31]], dtype=np.float32)
     vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
     # Centre: closest to the mean; then the farthest from it; then the farthest from that.
-    assert representatives(vectors, [11, 12, 13, 14]) == [13, 12, 14]
+    assert representatives(vectors, [11, 12, 13, 14]) == [11, 13, 12]
     assert representatives(vectors[:3], [11, 12, 13])[0] == 11
     assert sorted(representatives(vectors[:3], [11, 12, 13])) == [11, 12, 13]
     assert sorted(representatives(vectors[:2], [11, 12])) == [11, 12]
