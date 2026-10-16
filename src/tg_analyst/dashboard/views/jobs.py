@@ -74,9 +74,42 @@ def jobs_page() -> None:
     _exclusions()
 
 
-def _target(job) -> str:
-    params = job.params or {}
-    return params.get("group", "") + (" (auto)" if params.get("scheduled") else "")
+def _group_titles(session) -> dict[str, str]:
+    """Every way a job may name a group (marked id, bare id, @username) -> its title."""
+    titles: dict[str, str] = {}
+    for g in session.execute(select(Group.group_id, Group.title, Group.username)):
+        title = g.title or (f"@{g.username}" if g.username else str(g.group_id))
+        keys = [str(g.group_id)]
+        if str(g.group_id).startswith("-100"):
+            bare = str(g.group_id)[4:]
+            keys += [bare, f"-{bare}"]
+        if g.username:
+            keys.append(g.username.lower())
+        titles.update(dict.fromkeys(keys, title))
+    return titles
+
+
+def _group_ref(job) -> str:
+    return str((job.params or {}).get("group", ""))
+
+
+def _target(job, titles: dict[str, str]) -> str:
+    ref = _group_ref(job)
+    try:
+        key = parse_group_ref(ref).lower() if ref else ""
+    except GroupRefError:
+        key = ref
+    name = titles.get(key, ref)
+    return name + (" (auto)" if (job.params or {}).get("scheduled") else "")
+
+
+def _result(job, titles: dict[str, str]) -> str:
+    """The job's outcome, with the group reference in it replaced by the title."""
+    text = job.result or (job.error or "").split("\n")[0] or (job.progress or {}).get("detail", "")
+    ref = _group_ref(job)
+    if ref and text.endswith(f" from {ref}"):
+        text = text.removesuffix(ref) + _target(job, titles).removesuffix(" (auto)")
+    return text
 
 
 def _duration(delta: timedelta) -> str:
@@ -89,11 +122,11 @@ def _duration(delta: timedelta) -> str:
     return f"{seconds // 3600} h {seconds % 3600 // 60:02d} min"
 
 
-def _running(job, now: datetime) -> None:
+def _running(job, now: datetime, titles: dict[str, str]) -> None:
     """A progress bar with what the job is doing, how long it has run and is likely to run."""
     progress = job.progress or {}
     fraction = progress.get("fraction")
-    title = f"#{job.id} {job.kind} {_target(job)}".strip()
+    title = f"#{job.id} {job.kind} {_target(job, titles)}".strip()
     detail = progress.get("detail") or "Starting…"
     label = f"**{escape_md(title)}**: {escape_md(detail)}"
     if fraction is not None:
@@ -121,8 +154,23 @@ def _running(job, now: datetime) -> None:
 @st.fragment(run_every=5)
 def _job_table() -> None:
     st.subheader("Recent jobs")
+    show_all = st.toggle(
+        "Show runs that found nothing new",
+        value=False,
+        help="Automatic hourly refreshes of quiet groups fetch 0 messages and score 0. "
+        "They are hidden by default.",
+    )
     with session_factory()() as s:
-        rows = jobs.recent(s)
+        rows = jobs.recent(s, hide_nothing_new=not show_all)
+        hidden = 0 if show_all else jobs.count_nothing_new(s)
+        titles = _group_titles(s)
+    if hidden:
+        runs = (
+            "1 run that found nothing new is"
+            if hidden == 1
+            else f"{hidden:,} runs that found nothing new are"
+        )
+        st.caption(f"{runs} hidden.")
     if not rows:
         st.info("No jobs yet.")
         return
@@ -135,12 +183,13 @@ def _job_table() -> None:
         st.warning("Jobs have been queued for over 30 s. Is the worker running?")
 
     for job in sorted((j for j in rows if j.status == jobs.RUNNING), key=lambda j: j.id):
-        _running(job, now)
+        _running(job, now, titles)
     waiting = sorted((j for j in rows if j.status == jobs.QUEUED), key=lambda j: j.id)
     if waiting:
         st.caption(
             f"{len(waiting)} job(s) waiting; the worker runs one at a time, oldest first. "
-            f"Next: #{waiting[0].id} {waiting[0].kind} {escape_md(_target(waiting[0]))}"
+            f"Next: #{waiting[0].id} {waiting[0].kind} "
+            f"{escape_md(_target(waiting[0], titles))}"
         )
 
     def progress_of(j) -> float | None:
@@ -156,15 +205,13 @@ def _job_table() -> None:
                 "#": j.id,
                 "status": j.status,
                 "task": j.kind,
-                "target": _target(j),
+                "target": _target(j, titles),
                 "progress": progress_of(j),
                 "created (UTC)": f"{j.created_at:%Y-%m-%d %H:%M:%S}",
                 "duration": _duration((j.finished_at or now) - j.started_at)
                 if j.started_at
                 else "",
-                "result": j.result
-                or (j.error or "").split("\n")[0]
-                or (j.progress or {}).get("detail", ""),
+                "result": _result(j, titles),
             }
             for j in rows
         ]

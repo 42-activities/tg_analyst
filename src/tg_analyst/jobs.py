@@ -11,7 +11,7 @@ import time
 import traceback
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, not_, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from tg_analyst.progress import Progress
@@ -68,8 +68,33 @@ def recover_stale(session: Session) -> int:
     return n
 
 
-def recent(session: Session, limit: int = 50) -> list[Job]:
-    return list(session.scalars(select(Job).order_by(Job.id.desc()).limit(limit)))
+# How a run that changed nothing reports itself (SQL LIKE patterns over Job.result); kept
+# next to the runners below that write these results.
+_NOTHING_NEW = {
+    "backfill": "Fetched 0 messages %",
+    "enrich": "Scored 0 messages %",
+    "sync": "%: 0 deleted, 0 edited, reactions updated on 0",
+}
+
+
+def _nothing_new():
+    """SQL condition: a finished job that changed nothing (most hourly refreshes)."""
+    return and_(
+        Job.status == DONE,
+        or_(*(and_(Job.kind == kind, Job.result.like(p)) for kind, p in _NOTHING_NEW.items())),
+    )
+
+
+def recent(session: Session, limit: int = 50, hide_nothing_new: bool = False) -> list[Job]:
+    """The latest jobs, newest first; optionally without runs that found nothing new."""
+    stmt = select(Job).order_by(Job.id.desc()).limit(limit)
+    if hide_nothing_new:
+        stmt = stmt.where(not_(_nothing_new()))
+    return list(session.scalars(stmt))
+
+
+def count_nothing_new(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(Job).where(_nothing_new()))
 
 
 def _finish(session: Session, job: Job, status: str, result=None, error=None) -> None:

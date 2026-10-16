@@ -144,3 +144,34 @@ def test_jobs_page_shows_progress(db_url):
     captions = " ".join(c.value for c in at.caption)
     assert "about 30 min left" in captions and "1 job(s) waiting" in captions
     assert not at.warning  # queued behind a running job is not "worker down"
+
+
+def test_jobs_page_names_groups_and_hides_quiet_runs(db_url):
+    from tg_analyst.storage import repository as repo
+    from tg_analyst.storage.records import GroupRecord
+
+    eng = make_engine(db_url)
+    init_db(eng)
+    with make_session_factory(eng)() as s:
+        repo.upsert_group(s, GroupRecord(-1001234567890, "Book Club", username="BookClub"))
+        s.commit()
+        for ref, result in [
+            ("@bookclub", "Fetched 12 messages from @bookclub"),
+            ("1234567890", "Fetched 0 messages from 1234567890"),  # quiet: hidden
+            ("-1001234567890", "Fetched 3 messages from -1001234567890"),
+        ]:
+            job = jobs.enqueue(s, "backfill", {"group": ref, "scheduled": True})
+            jobs.claim_next(s)
+            jobs._finish(s, job, jobs.DONE, result=result)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.switch_page("views/jobs.py")
+    at.run()
+    assert not at.exception, at.exception
+    table = at.dataframe[0].value
+    assert list(table["target"]) == ["Book Club (auto)", "Book Club (auto)"]
+    assert list(table["result"]) == ["Fetched 3 messages from Book Club"] + [
+        "Fetched 12 messages from Book Club"
+    ]
+    assert any("1 run that found nothing new is hidden" in c.value for c in at.caption)
+    at.toggle[0].set_value(True).run()
+    assert len(at.dataframe[0].value) == 3

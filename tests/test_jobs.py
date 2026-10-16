@@ -67,3 +67,32 @@ def test_failed_job_records_error_and_backfill_requires_credentials(factory, mon
             assert s.scalar(select(func.count()).select_from(Job)) == 1
     finally:
         get_settings.cache_clear()
+
+
+def test_recent_can_hide_runs_that_found_nothing_new(session):
+    results = {
+        "backfill": ["Fetched 0 messages from g", "Fetched 10 messages from g"],
+        "enrich": ["Scored 0 messages (0 without text) with vader", "Scored 30 messages (2 …"],
+        "sync": [
+            "Checked 50 messages (last 30 days): 0 deleted, 0 edited, reactions updated on 0",
+            "Checked 50 messages (last 30 days): 0 deleted, 0 edited, reactions updated on 05",
+        ],
+    }
+    expected_shown = []
+    for kind, (quiet, busy) in results.items():
+        for result in (quiet, busy):
+            job = jobs.enqueue(session, kind)
+            jobs.claim_next(session)
+            jobs._finish(session, job, jobs.DONE, result=result)
+            if result == busy:
+                expected_shown.append(job.id)
+    failed = jobs.enqueue(session, "backfill")
+    jobs.claim_next(session)
+    jobs._finish(session, failed, jobs.FAILED, error="boom")
+    queued = jobs.enqueue(session, "enrich")
+
+    assert len(jobs.recent(session)) == 8
+    shown = [j.id for j in jobs.recent(session, hide_nothing_new=True)]
+    assert shown == sorted([*expected_shown, failed.id, queued.id], reverse=True)
+    assert jobs.count_nothing_new(session) == 3
+    assert [j.id for j in jobs.recent(session, limit=2, hide_nothing_new=True)] == shown[:2]
