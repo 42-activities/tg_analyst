@@ -194,3 +194,77 @@ def thread_membership(engine: Engine, group_id: int) -> pd.DataFrame:
         columns={"message_ids": "message_id", "root_message_id": "root_id"}
     )
     return out[["message_id", "root_id"]].astype("int64").reset_index(drop=True)
+
+
+SKELETON_CHUNK = 50_000
+
+
+def message_skeleton(engine: Engine, group_id: int) -> pd.DataFrame:
+    """Every message of a group without its text, for thread building on large groups.
+
+    Instead of the text it carries ``text_hash`` (md5, computed by PostgreSQL), enough to
+    tell whether a thread changed. Streamed from a server-side cursor in chunks: loading
+    a 500k-message group with its text the usual way needs more than 2 GB.
+    """
+    stmt = (
+        select(
+            Message.message_id,
+            Message.sender_id,
+            Message.timestamp,
+            Message.reply_to_msg_id,
+            Message.thread_id,
+            Message.reaction_count,
+            Message.is_service,
+            func.md5(func.coalesce(Message.text, "")).label("text_hash"),
+            Enrichment.sentiment_score,
+            Enrichment.sentiment_label,
+            Enrichment.insult,
+            Enrichment.threat,
+            User.is_bot,
+        )
+        .outerjoin(
+            Enrichment,
+            and_(
+                Enrichment.group_id == Message.group_id, Enrichment.message_id == Message.message_id
+            ),
+        )
+        .outerjoin(User, User.user_id == Message.sender_id)
+        .where(Message.group_id == group_id)
+        .order_by(Message.message_id)
+    )
+    with engine.connect().execution_options(stream_results=True) as conn:
+        chunks = list(pd.read_sql(stmt, conn, chunksize=SKELETON_CHUNK, parse_dates=["timestamp"]))
+    if not chunks:
+        return pd.read_sql(stmt.limit(0), engine)
+    df = pd.concat(chunks, ignore_index=True)
+    df["is_bot"] = df["is_bot"].astype("boolean").fillna(False).astype(bool)
+    df["is_service"] = df["is_service"].astype(bool)
+    for column in ("sentiment_score", "insult", "threat", "reaction_count"):
+        df[column] = df[column].astype(float)
+    return df
+
+
+def message_texts(engine: Engine, group_id: int, message_ids, chunk: int = 5000) -> pd.DataFrame:
+    """``message_id, text`` for the given messages, queried in chunks."""
+    ids = sorted({int(m) for m in message_ids})
+    frames = [
+        pd.read_sql(
+            select(Message.message_id, Message.text).where(
+                Message.group_id == group_id, Message.message_id.in_(ids[i : i + chunk])
+            ),
+            engine,
+        )
+        for i in range(0, len(ids), chunk)
+    ]
+    if not frames:
+        return pd.DataFrame({"message_id": pd.Series(dtype="int64"), "text": []})
+    return pd.concat(frames, ignore_index=True)
+
+
+def member_names(engine: Engine, group_id: int) -> list[str]:
+    """Usernames and display names of everyone who wrote in the group."""
+    senders = select(Message.sender_id).where(Message.group_id == group_id).distinct()
+    rows = pd.read_sql(
+        select(User.username, User.display_name).where(User.user_id.in_(senders)), engine
+    )
+    return [n for n in pd.concat([rows["username"], rows["display_name"]]).dropna().unique()]

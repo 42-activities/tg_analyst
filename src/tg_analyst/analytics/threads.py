@@ -181,12 +181,15 @@ def thread_texts(
     }
 
 
-def content_keys(msgs: pd.DataFrame, membership: pd.DataFrame) -> pd.Series:
-    """``root_id -> hash`` of the thread's message ids and texts, to detect changed threads."""
+def content_keys(msgs: pd.DataFrame, membership: pd.DataFrame, column: str = "text") -> pd.Series:
+    """``root_id -> hash`` of the thread's message ids and texts, to detect changed threads.
+
+    ``column`` may hold the text or a hash of it (``load.message_skeleton``'s ``text_hash``).
+    """
     if membership.empty:
         return pd.Series(dtype=object)
-    frame = membership.merge(msgs[["message_id", "text"]], on="message_id")
+    frame = membership.merge(msgs[["message_id", column]], on="message_id")
     frame = frame.sort_values("message_id")
-    parts = frame["message_id"].astype(str) + "\x00" + frame["text"].fillna("").astype(str)
+    parts = frame["message_id"].astype(str) + "\x00" + frame[column].fillna("").astype(str)
     joined = parts.groupby(frame["root_id"]).agg("\x01".join)
     return joined.map(lambda value: hashlib.sha1(value.encode()).hexdigest())

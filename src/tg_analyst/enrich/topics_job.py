@@ -1,5 +1,9 @@
 """The ``topics`` job: threads -> embeddings -> clusters -> labels -> summaries, per group.
 
+Large groups don't fit in memory with their text, so the job works on a text-free
+skeleton of the group (``load.message_skeleton``) and fetches text only for the threads
+it embeds or summarizes, and in chunks for the keyword labels.
+
 1. Build the group's threads and embed those that are new, changed (``content_key``) or
    embedded by another model; drop rows of threads that no longer exist.
 2. Cluster the stored vectors per quarter, merge the quarters into topics, and pick
@@ -54,8 +58,19 @@ class TopicStats:
     summaries_kept: int = 0
 
 
-def _all_messages(session: Session, group_id: int) -> pd.DataFrame:
-    return load.messages(session.get_bind(), group_id, datetime(1970, 1, 1), datetime(2100, 1, 1))
+TERMS_CHUNK = 20_000  # messages per keyword-extraction chunk
+
+
+def _with_text(session: Session, group_id: int, msgs: pd.DataFrame, message_ids) -> pd.DataFrame:
+    """Skeleton rows of ``message_ids`` joined with their text from the database."""
+    texts = load.message_texts(session.get_bind(), group_id, message_ids)
+    return msgs.merge(texts, on="message_id")
+
+
+def _texts_of(session, group_id, msgs, membership, roots, max_chars) -> dict[int, str]:
+    part = membership[membership["root_id"].isin(set(roots))]
+    rows = _with_text(session, group_id, msgs, part["message_id"])
+    return thread_texts(rows, part, max_chars=max_chars)
 
 
 def embed_threads(
@@ -67,7 +82,7 @@ def embed_threads(
     stats: TopicStats,
     progress: Progress = no_progress,
 ) -> None:
-    keys = content_keys(msgs, membership)
+    keys = content_keys(msgs, membership, column="text_hash")
     stats.threads = len(keys)
     stored = dict(
         session.execute(
@@ -97,7 +112,7 @@ def embed_threads(
     ids = membership.groupby("root_id")["message_id"].apply(list)
     for done in range(0, len(todo), EMBED_BATCH):
         batch = todo[done : done + EMBED_BATCH]
-        texts = thread_texts(msgs, membership, roots=batch, max_chars=TEXT_CHARS)
+        texts = _texts_of(session, group_id, msgs, membership, batch, TEXT_CHARS)
         vectors = backend.embed([texts[root] for root in batch])
         rows = [
             {
@@ -152,22 +167,17 @@ def build_topics(
     progress: Progress = no_progress,
     merge_threshold: float | None = None,
 ) -> None:
-    rows = session.execute(
-        select(ThreadEmbedding.root_message_id, ThreadEmbedding.start, ThreadEmbedding.vector)
-        .where(ThreadEmbedding.group_id == group_id, ThreadEmbedding.model_version == model_version)
-        .order_by(ThreadEmbedding.start)
-    ).all()
+    roots, starts, vectors = _stored_vectors(session, group_id, model_version)
     previous = {
         t.summary_key: t
         for t in session.scalars(select(ContextTopic).where(ContextTopic.group_id == group_id))
         if t.summary_key and t.summary
     }
     topics: list[dict] = []
-    if rows:
-        progress(EMBED_SHARE, f"Clustering {len(rows):,} threads")
-        roots = np.array([r.root_message_id for r in rows])
-        vectors = center(np.array([r.vector for r in rows], dtype=np.float32))
-        threads = pd.DataFrame({"root_id": roots, "start": [r.start for r in rows]})
+    if len(roots):
+        progress(EMBED_SHARE, f"Clustering {len(roots):,} threads")
+        vectors = center(vectors)
+        threads = pd.DataFrame({"root_id": roots, "start": starts})
         assignment = merge_windows(
             cluster_windows(threads, vectors, threshold),
             roots,
@@ -175,10 +185,18 @@ def build_topics(
             threshold if merge_threshold is None else merge_threshold,
         )
         topics = _describe(
-            msgs, membership, assignment, roots, vectors, model_version, threshold, group_id
+            session,
+            msgs,
+            membership,
+            assignment,
+            roots,
+            vectors,
+            model_version,
+            threshold,
+            group_id,
         )
 
-    keys = content_keys(msgs, membership)
+    keys = content_keys(msgs, membership, column="text_hash")
     candidates = topics[:summary_top] if summarizer else []
     for done, topic in enumerate(candidates, start=1):
         reps = [topic["centre_root"], *topic["edge_roots"]]
@@ -187,7 +205,7 @@ def build_topics(
             topic.update(title=old.title, summary=old.summary, summary_model=old.summary_model)
             stats.summaries_kept += 1
             continue
-        texts = thread_texts(msgs, membership, roots=reps, max_chars=SUMMARY_TEXT_CHARS)
+        texts = _texts_of(session, group_id, msgs, membership, reps, SUMMARY_TEXT_CHARS)
         result = summarizer.summarize([texts[r] for r in reps if r in texts])
         if result:
             topic.update(title=result.title, summary=result.summary, summary_model=summarizer.model)
@@ -205,14 +223,44 @@ def build_topics(
     stats.topics = len(topics)
 
 
-def _describe(msgs, membership, assignment, roots, vectors, model_version, threshold, group_id):
+def _stored_vectors(session, group_id, model_version, chunk: int = 2000):
+    """(roots, starts, vectors) of the group's embedded threads, read in chunks straight
+    into a float32 array (a list of Python floats per row would take ~6x the memory)."""
+    stmt = (
+        select(ThreadEmbedding.root_message_id, ThreadEmbedding.start, ThreadEmbedding.vector)
+        .where(ThreadEmbedding.group_id == group_id, ThreadEmbedding.model_version == model_version)
+        .order_by(ThreadEmbedding.start)
+        .execution_options(yield_per=chunk)
+    )
+    roots, starts, blocks = [], [], []
+    for part in session.execute(stmt).partitions():
+        roots.extend(r.root_message_id for r in part)
+        starts.extend(r.start for r in part)
+        blocks.append(np.array([r.vector for r in part], dtype=np.float32))
+    vectors = np.vstack(blocks) if blocks else np.zeros((0, 0), dtype=np.float32)
+    return np.array(roots, dtype=np.int64), starts, vectors
+
+
+def _topic_terms(session, group_id, msgs, message_ids) -> pd.DataFrame:
+    """Keywords of the given messages, extracted chunk by chunk to bound memory."""
+    ids = sorted(int(m) for m in message_ids)
+    parts = [
+        message_terms(_with_text(session, group_id, msgs, ids[i : i + TERMS_CHUNK]))
+        for i in range(0, len(ids), TERMS_CHUNK)
+    ]
+    return pd.concat(parts, ignore_index=True) if parts else message_terms(msgs.head(0))
+
+
+def _describe(
+    session, msgs, membership, assignment, roots, vectors, model_version, threshold, group_id
+):
     """Topic rows (without summaries), ordered by messages, most first."""
     table = topic_table(msgs, membership, assignment)
     position = {int(root): i for i, root in enumerate(roots)}
     message_topic = membership.set_index("message_id")["root_id"].map(assignment).dropna()
-    in_topics = msgs[msgs["message_id"].isin(message_topic.index)]
-    names = pd.concat([msgs["username"], msgs["display_name"]]).dropna().unique()
-    labels = distinctive_terms(without_names(message_terms(in_topics), names), message_topic)
+    terms = _topic_terms(session, group_id, msgs, message_topic.index)
+    names = load.member_names(session.get_bind(), group_id)
+    labels = distinctive_terms(without_names(terms, names), message_topic)
     now = datetime.now(UTC).replace(tzinfo=None)
     members = assignment.groupby(assignment).groups
     topics = []
@@ -251,7 +299,7 @@ def run_topics(
 ) -> TopicStats:
     stats = TopicStats()
     progress(None, "Loading messages and building threads")
-    msgs = _all_messages(session, group_id)
+    msgs = load.message_skeleton(session.get_bind(), group_id)
     membership = build_threads(msgs)
     embed_threads(session, group_id, msgs, membership, backend, stats, progress)
     build_topics(
