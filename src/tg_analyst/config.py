@@ -23,12 +23,16 @@ class Settings(BaseSettings):
     hf_toxicity_model: str = "cointegrated/rubert-tiny-toxicity"
 
     # Context topics (docs/CONTEXT_TOPICS.md): thread embedding model ("" disables), the
-    # clustering distance threshold, and Claude summaries of the top topics (off without
-    # an API key; the text of three pseudonymized threads per topic goes to Anthropic).
+    # clustering distance threshold, and LLM summaries of the top topics (off without an
+    # API key; the text of three pseudonymized threads per topic goes to the provider):
+    # an OpenAI-compatible API such as Mistral (SUMMARY_BASE_URL + SUMMARY_API_KEY), else
+    # Claude (ANTHROPIC_API_KEY).
     hf_embedding_model: str = "cointegrated/rubert-tiny2"
     topic_threshold: float = 0.6  # within a quarter, on mean-centered vectors
     topic_merge_threshold: float = 0.5  # quarters into whole-history topics
     anthropic_api_key: SecretStr | None = None
+    summary_base_url: str = ""  # e.g. https://api.mistral.ai/v1
+    summary_api_key: SecretStr | None = None
     topic_summary_model: str = "claude-haiku-5-5"
     topic_summary_top: int = 25
 

@@ -1,7 +1,7 @@
 # Context topics: threads → embeddings → clusters → summaries
 
-Status: **running in production** for all groups (keyword labels until
-`ANTHROPIC_API_KEY` is set). Decided 2026-10-16: Claude summaries (phase 5), start with the
+Status: **running in production** for all groups (keyword labels until a summary API key
+is set). Decided 2026-10-16: LLM summaries (phase 5), start with the
 36k group (42), embeddings with `rubert-tiny2` (phase 0).
 
 Keyword topics (`analytics/topics.py`) count stemmed words. They are fast and local, but
@@ -284,6 +284,10 @@ Claude summaries.
 ### Phase 5: LLM summaries (only if chosen)
 
 - [x] `pyproject.toml`: `anthropic` in a new `llm` extra; image `EXTRAS=web,hf,llm`.
+- [x] OpenAI-compatible provider (`summaries.ChatCompletionsClient`, stdlib only):
+      `SUMMARY_BASE_URL` + `SUMMARY_API_KEY` + `TOPIC_SUMMARY_MODEL`; wins over Claude when
+      set. Production uses Mistral (`https://api.mistral.ai/v1`, `mistral-small-latest`,
+      EU-hosted). Decided 2026-10-17.
 - [x] Settings: `ANTHROPIC_API_KEY` (empty = off), `TOPIC_SUMMARY_MODEL`
       (Claude Haiku), `TOPIC_SUMMARY_TOP=25`. Added to `ENV_FILE` by the user.
 - [x] `enrich/summaries.py`: build the prompt from the three representative threads
@@ -321,8 +325,8 @@ Claude summaries.
 
 ## Decisions
 
-1. **Summaries:** Claude Haiku summaries of the top topics (the text of three
-   pseudonymized threads per topic goes to Anthropic), with keyword labels as the
-   fallback and when the API key is empty. Decided 2026-10-16.
+1. **Summaries:** LLM summaries of the top topics (the text of three pseudonymized
+   threads per topic goes to the provider), with keyword labels as the fallback and when
+   no API key is set. Decided 2026-10-16 (Claude); switched to Mistral on 2026-10-17.
 2. **Rollout:** the 36k group (42) first to tune θ, then all groups.
 3. **Model:** `rubert-tiny2` (phase 0 measurements).

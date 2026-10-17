@@ -1,4 +1,8 @@
-"""Claude summaries of context topics (needs the ``llm`` extra and ANTHROPIC_API_KEY).
+"""LLM summaries of context topics.
+
+Two providers: Claude (the ``llm`` extra and ANTHROPIC_API_KEY), or any OpenAI-compatible
+chat completions API such as Mistral (SUMMARY_BASE_URL and SUMMARY_API_KEY; no extra
+dependency). The OpenAI-compatible one wins when both are configured.
 
 What is sent: the text of up to three representative threads per topic, as built by
 ``analytics.threads.thread_text``: speakers are per-thread letters, @mentions are masked
@@ -12,7 +16,12 @@ string fields is accepted from the reply. The dashboard renders both with ``esca
 import json
 import logging
 import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 log = logging.getLogger(__name__)
 
@@ -74,11 +83,69 @@ def parse(reply: str) -> Summary | None:
     return Summary(title, summary) if title and summary else None
 
 
+class ChatCompletionsClient:
+    """A minimal OpenAI-compatible chat completions client (Mistral, OpenRouter, ...),
+    shaped like ``anthropic.Anthropic`` (``client.messages.create(...)``) for Summarizer.
+
+    Rate limits and server errors (429, 5xx) are retried with backoff, honouring
+    ``Retry-After``.
+    """
+
+    def __init__(
+        self, base_url: str, api_key: str, timeout: float = 60, max_retries: int = 3
+    ) -> None:
+        self.url = base_url.rstrip("/") + "/chat/completions"
+        self._api_key = api_key
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.messages = self
+
+    def _post(self, body: dict) -> dict:
+        request = urllib.request.Request(
+            self.url,
+            data=json.dumps(body).encode(),
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        for attempt in range(self.max_retries + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    return json.loads(response.read())
+            except urllib.error.HTTPError as error:
+                retryable = error.code == 429 or error.code >= 500
+                if not retryable or attempt == self.max_retries:
+                    raise
+                wait = error.headers.get("Retry-After")
+                delay = float(wait) if wait and wait.isdigit() else 2.0**attempt
+            except (urllib.error.URLError, TimeoutError):
+                if attempt == self.max_retries:
+                    raise
+                delay = 2.0**attempt
+            time.sleep(min(delay, 60))
+        raise RuntimeError("unreachable")
+
+    def create(self, *, model: str, max_tokens: int, system: str, messages: list[dict]):
+        data = self._post(
+            {
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": 0.2,
+                "messages": [{"role": "system", "content": system}, *messages],
+            }
+        )
+        text = data["choices"][0]["message"]["content"] or ""
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)])
+
+
 class Summarizer:
-    """Summarizes topics with a Claude model; returns None when it can't."""
+    """Summarizes topics with an LLM; returns None when it can't."""
 
     def __init__(self, client, model: str, max_tokens: int = 300) -> None:
-        # ``client`` is an ``anthropic.Anthropic`` (or a fake with ``messages.create``).
+        # ``client`` is an ``anthropic.Anthropic``, a ChatCompletionsClient, or a fake with
+        # ``messages.create``.
         self.client = client
         self.model = model
         self.max_tokens = max_tokens
@@ -106,10 +173,32 @@ class Summarizer:
         return None
 
 
+def _secret(value) -> str:
+    return value.get_secret_value() if value is not None else ""
+
+
+def provider(settings) -> str | None:
+    """Where summaries are sent (an API host, or "Anthropic"), or None when they're off."""
+    if not settings.topic_summary_model:
+        return None
+    if settings.summary_base_url and _secret(settings.summary_api_key):
+        return urllib.parse.urlsplit(settings.summary_base_url).hostname or "the summary API"
+    return "Anthropic" if _secret(settings.anthropic_api_key) else None
+
+
 def from_settings(settings) -> Summarizer | None:
-    """A Summarizer when ANTHROPIC_API_KEY is set and the llm extra is installed."""
+    """A Summarizer for the configured provider, or None when summaries are off.
+
+    SUMMARY_BASE_URL + SUMMARY_API_KEY: an OpenAI-compatible API (e.g. Mistral).
+    Otherwise ANTHROPIC_API_KEY, when the llm extra is installed.
+    """
+    if not settings.topic_summary_model:
+        return None
+    if settings.summary_base_url and _secret(settings.summary_api_key):
+        client = ChatCompletionsClient(settings.summary_base_url, _secret(settings.summary_api_key))
+        return Summarizer(client, settings.topic_summary_model)
     key = settings.anthropic_api_key
-    if key is None or not key.get_secret_value() or not settings.topic_summary_model:
+    if not _secret(key):
         return None
     try:
         import anthropic

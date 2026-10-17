@@ -9,7 +9,7 @@ it embeds or summarizes, and in chunks for the keyword labels.
 2. Cluster the stored vectors per quarter, merge the quarters into topics, and pick
    three representative threads per topic.
 3. Label every topic with its distinctive keywords, and summarize the largest ones with
-   Claude when a summarizer is configured. A topic whose representatives are unchanged
+   an LLM when a summarizer is configured. A topic whose representatives are unchanged
    keeps its earlier summary, so a daily run costs nothing when nothing changed.
 4. Replace the group's ``context_topics`` rows in one transaction.
 """
@@ -45,7 +45,7 @@ log = logging.getLogger(__name__)
 EMBED_BATCH = 64
 EMBED_SHARE = 0.85  # of the progress bar; clustering and summaries take the rest
 TEXT_CHARS = 2000  # per thread, for the embedding (the model truncates at 512 tokens)
-SUMMARY_TEXT_CHARS = 1500  # per thread sent to Claude
+SUMMARY_TEXT_CHARS = 1500  # per thread sent to the summary model
 
 
 @dataclass(slots=True)

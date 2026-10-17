@@ -167,3 +167,77 @@ def test_worker_runs_the_topics_job(engine, themed_group, monkeypatch):
     jobs.run_one(factory)
     with factory() as s:
         assert jobs.count_nothing_new(s) == 1
+
+
+class ChatAPI:
+    """A local OpenAI-compatible endpoint: first a 429, then canned replies."""
+
+    def __init__(self):
+        import http.server
+        import threading
+
+        self.requests = []
+        api = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                api.requests.append((self.path, self.headers["Authorization"], body))
+                if len(api.requests) == 1:
+                    self.send_response(429)
+                    self.send_header("Retry-After", "0")
+                    self.end_headers()
+                    return
+                reply = {"title": "Визы", "summary": "Обсуждают визы."}
+                payload = {"choices": [{"message": {"content": json.dumps(reply)}}]}
+                data = json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}/v1/"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+
+def test_openai_compatible_provider_writes_summaries(session, themed_group):
+    from tg_analyst.config import Settings
+    from tg_analyst.enrich import summaries
+
+    gid, _ = themed_group
+    api = ChatAPI()
+    try:
+        settings = Settings(
+            summary_base_url=api.url,
+            summary_api_key="test-key",
+            anthropic_api_key="ignored",
+            topic_summary_model="mistral-test",
+        )
+        assert summaries.provider(settings) == "127.0.0.1"
+        summarizer = summaries.from_settings(settings)
+        assert isinstance(summarizer.client, summaries.ChatCompletionsClient)
+        stats = run_topics(session, gid, FakeEmbedding(), 0.3, summarizer, summary_top=1)
+    finally:
+        api.server.shutdown()
+    assert stats.summarized == 1 and len(api.requests) == 2  # the 429 was retried
+    path, auth, body = api.requests[-1]
+    assert path == "/v1/chat/completions" and auth == "Bearer test-key"
+    assert body["model"] == "mistral-test"
+    assert [m["role"] for m in body["messages"]] == ["system", "user"]
+    assert body["messages"][1]["content"].count("<thread>") == 3
+    topic = topics_of(session, gid)[0]
+    assert (topic.title, topic.summary_model) == ("Визы", "mistral-test")
+
+
+def test_provider_needs_both_url_and_key():
+    from tg_analyst.config import Settings
+    from tg_analyst.enrich import summaries
+
+    assert summaries.from_settings(Settings(summary_base_url="http://x/v1")) is None
+    assert summaries.from_settings(Settings(summary_api_key="k")) is None
+    assert summaries.provider(Settings(anthropic_api_key="k")) == "Anthropic"

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from tg_analyst import jobs
 from tg_analyst.config import get_settings
 from tg_analyst.dashboard.common import escape_md, session_factory
+from tg_analyst.enrich.summaries import provider as summary_provider
 from tg_analyst.ingest.groupref import GroupRefError, parse_group_ref
 from tg_analyst.storage.models import ExcludedUser, Group, User
 
@@ -288,12 +289,13 @@ def _topic_controls() -> None:
     if not settings.hf_embedding_model:
         st.caption("Off: HF_EMBEDDING_MODEL is empty.")
         return
+    sent_to = summary_provider(settings)
     summaries = (
         f"titles and summaries of the {settings.topic_summary_top} largest topics by "
         f"{settings.topic_summary_model} (three anonymized example conversations per topic "
-        "are sent to Anthropic)"
-        if settings.anthropic_api_key and settings.anthropic_api_key.get_secret_value()
-        else "keyword labels (no Claude summaries: ANTHROPIC_API_KEY is empty)"
+        f"are sent to {sent_to})"
+        if sent_to
+        else "keyword labels (no LLM summaries: no summary API key is set)"
     )
     schedule = (
         f"Rebuilt every {settings.auto_topics_hours} h for every group. "

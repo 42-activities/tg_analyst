@@ -46,7 +46,7 @@ Telegram groups host tech communities, customer support and local and profession
 - **`interactions`**: `source_user_id`, `target_user_id`, `message_id`, `type` (`reply` | `mention` | `reaction` | `forward`), `timestamp`
 - **`enrichment`**: `message_id`, `sentiment_score`, `sentiment_label`, `toxicity`, `insult`, `obscenity`, `threat`, `intent`, `topics`, `model_version`
 - **`thread_embeddings`**: one row per conversation thread: `root_message_id` (deleted with it), `message_ids`, `content_key`, `vector`, `model_version`
-- **`context_topics`**: clusters of similar threads per group: `label` (keywords), `title` and `summary` (Claude), representative threads, `thread_roots`
+- **`context_topics`**: clusters of similar threads per group: `label` (keywords), `title` and `summary` (LLM), representative threads, `thread_roots`
 - **`jobs`**: work queued from the web UI (`backfill`, `enrich`, `sync`, `topics`, …) and run by the worker
 
 ---
@@ -83,9 +83,9 @@ Whether a newcomer's first message got an answer, how fast and in what tone, and
 ### Topics
 What the group talks about. Keywords are stemmed, so "виза", "визу" and "визы" count as one topic, and stopwords and chat filler are dropped. A keyword only counts as a topic if at least 3 members use it. Each topic shows its tone **relative to the group's usual tone**, so tense subjects stand out even in a rough chat (money and administration, in the real group). The tab also shows what's trending in the last 30 days compared with before. For any topic you can see its weekly volume and tone, who talks about it, and its latest messages. With pseudonymization on, member names are dropped from the keywords.
 
-The **Conversations** view groups whole threads (reply chains and quick follow-ups by the same person) by meaning instead of by word. A small model (`rubert-tiny2`) embeds each thread, similar threads are clustered per quarter and the quarters merged, and each topic gets keyword labels and, when `ANTHROPIC_API_KEY` is set, a title and a one-or-two-sentence summary written by Claude Haiku. It shows topics by size and tone (with insult share), the top 10 per quarter, and topic cards with three example conversations each. Run it from the Jobs page ("Find conversation topics"); details in [`docs/CONTEXT_TOPICS.md`](docs/CONTEXT_TOPICS.md).
+The **Conversations** view groups whole threads (reply chains and quick follow-ups by the same person) by meaning instead of by word. A small model (`rubert-tiny2`) embeds each thread, similar threads are clustered per quarter and the quarters merged, and each topic gets keyword labels and, when a summary provider is configured, a title and a one-or-two-sentence summary written by an LLM: Mistral or any other OpenAI-compatible API (`SUMMARY_BASE_URL`, `SUMMARY_API_KEY`, `TOPIC_SUMMARY_MODEL`), or Claude (`ANTHROPIC_API_KEY`). It shows topics by size and tone (with insult share), the top 10 per quarter, and topic cards with three example conversations each. Run it from the Jobs page ("Find conversation topics"); details in [`docs/CONTEXT_TOPICS.md`](docs/CONTEXT_TOPICS.md).
 
-**What is sent to Anthropic** (only with an API key): for each of the 25 largest topics of a group, the text of three example threads, with speakers replaced by letters (A, B, …), @mentions masked and links removed. Excluded members' messages are never stored, so never sent. A topic whose example threads didn't change keeps its summary and isn't sent again. Leave `ANTHROPIC_API_KEY` empty to keep everything on the server.
+**What is sent to the summary provider** (only with an API key): for each of the 25 largest topics of a group, the text of three example threads, with speakers replaced by letters (A, B, …), @mentions masked and links removed. Excluded members' messages are never stored, so never sent. A topic whose example threads didn't change keeps its summary and isn't sent again. Leave the API keys empty to keep everything on the server.
 
 ### Messages
 Search by text, tone, message type and toxicity (insult, threat, swearing). With pseudonymization on, @usernames in the text are masked.
