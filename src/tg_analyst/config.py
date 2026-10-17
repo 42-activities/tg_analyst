@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     auto_refresh_minutes: int = 60
     auto_reconcile_hours: int = 24
     reconcile_days: int = 30
-    # Rebuild context topics of every group (0 = only when queued by hand).
-    auto_topics_hours: int = 0
+    # Rebuild context topics of every group daily (0 = only when queued by hand).
+    auto_topics_hours: int = 24
 
     def require_telegram(self) -> tuple[int, str]:
         """Return (api_id, api_hash) or raise if credentials are missing."""

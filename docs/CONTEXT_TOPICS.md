@@ -1,6 +1,7 @@
 # Context topics: threads → embeddings → clusters → summaries
 
-Status: **in progress.** Decided 2026-10-16: Claude summaries (phase 5), start with the
+Status: **running in production** for all groups (keyword labels until
+`ANTHROPIC_API_KEY` is set). Decided 2026-10-16: Claude summaries (phase 5), start with the
 36k group (42), embeddings with `rubert-tiny2` (phase 0).
 
 Keyword topics (`analytics/topics.py`) count stemmed words. They are fast and local, but
@@ -137,7 +138,8 @@ one migration (`0006_context_topics`) for both tables; thread helpers are vector
 is quadratic; hubs (≥ 50 direct replies) replace the `thread_id` split; topic stats are
 computed in the dashboard from `thread_embeddings.message_ids`, so they follow the date
 filter; the job is `enrich/topics_job.py`; schedule via `AUTO_TOPICS_HOURS` (0 = by hand).
-What's left is phase 6.
+Phase 6 is done except the owner's review of example conversations and turning on
+Claude summaries.
 
 ### Phase 0: measure before building (no code merged)
 
@@ -297,15 +299,24 @@ What's left is phase 6.
 
 ### Phase 6: rollout
 
-- [ ] Run `topics` for the 36k group, tune θ, review in the dashboard.
-- [ ] Run for all groups; check job time and peak RAM on the 300–500k groups.
-- [ ] Schedule daily; tick "model-based topics" in `ROADMAP.md`; update `README.md`,
+- [x] Run `topics` for the 36k group, tune θ (centering + 0.6/0.5), dashboard renders.
+- [x] Run for all groups (2026-10-17). 300k group: 24,773 threads, 753 topics, 21 min;
+      514k group: 32,962 threads, 1,478 topics, 14 min. Worker peak 1,081 MiB, host never
+      below 1.09 GB available. Largest topic 18–20% of clustered threads in every group.
+- [x] Schedule daily (`AUTO_TOPICS_HOURS=24`); tick "model-based topics" in `ROADMAP.md`; update `README.md`,
       `CLAUDE.md` (architecture rule for derived thread data), and this file's status.
 
 ## Resources
 
-- RAM is the limit, not disk: ~1.7 GB available, swap full (other services share the
-  host). Model ~0.5 GB; clustering per quarter < 100 MB.
+- RAM is the limit, not disk: ~1.1–1.7 GB available, swap full (other services share
+  the host). rubert-tiny2 + torch ~0.3 GB; a distance matrix is at most 4,000² (128 MB).
+- Loading a 514k-message group with its text (`load.messages`) needed more than 2 GB
+  and was killed. The job therefore uses `load.message_skeleton` (no text, md5 per
+  message, streamed in chunks): 63 MB frame, 382 MB peak for loading + threads + keys +
+  one 20k-message keyword chunk, 12 s. Text is fetched per embedding batch (64 threads),
+  per summary and per 20k messages for labels.
+- Measured job times (first run, embedding everything): 6k–14k groups 30–60 s, 46k
+  group 3 min 49 s (4,575 threads), worker peak 837 MiB.
 - Disk: model ~0.5 GB, embeddings ~50 MB for the largest group. Not a concern.
 
 ## Decisions

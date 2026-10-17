@@ -165,3 +165,13 @@ def test_schedule_due(chat):
     assert [j.kind for j in later] == ["backfill"]
     assert jobs.schedule_due(chat, now + timedelta(days=2), 0, 0, 30) == []
     assert count(chat, Job) == 3
+
+
+def test_schedule_due_rebuilds_topics_daily(chat):
+    now = datetime(2026, 10, 14, 12, 0)
+    created = jobs.schedule_due(chat, now, 0, 0, 30, topics_hours=24)
+    assert [(j.kind, j.params) for j in created] == [
+        ("topics", {"group": str(GID), "scheduled": True})
+    ]
+    assert jobs.schedule_due(chat, now + timedelta(hours=23), 0, 0, 30, topics_hours=24) == []
+    assert len(jobs.schedule_due(chat, now + timedelta(hours=25), 0, 0, 30, topics_hours=24)) == 1
