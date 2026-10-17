@@ -143,7 +143,7 @@ class ChatCompletionsClient:
 class Summarizer:
     """Summarizes topics with an LLM; returns None when it can't."""
 
-    def __init__(self, client, model: str, max_tokens: int = 300) -> None:
+    def __init__(self, client, model: str, max_tokens: int = 1024) -> None:
         # ``client`` is an ``anthropic.Anthropic``, a ChatCompletionsClient, or a fake with
         # ``messages.create``.
         self.client = client
@@ -169,7 +169,14 @@ class Summarizer:
             )
             if result := parse(reply):
                 return result
-            log.warning("Topic summary was not valid JSON (attempt %d)", attempt + 1)
+            # 300 tokens were too few on the real chats: the reply came back empty with
+            # stop_reason "max_tokens" (the output budget includes the model's reasoning).
+            log.warning(
+                "Topic summary was not valid JSON (attempt %d, stop_reason %s, %d chars)",
+                attempt + 1,
+                getattr(response, "stop_reason", None),
+                len(reply),
+            )
         return None
 
 

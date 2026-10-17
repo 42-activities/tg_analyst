@@ -110,6 +110,7 @@ def test_summaries_are_written_once_and_kept_while_topics_are_unchanged(session,
     stats = run_topics(session, gid, FakeEmbedding(), 0.3, summarizer, summary_top=1)
     assert stats.summarized == 1 and len(client.prompts) == 1
     sent = client.prompts[0]["messages"][0]["content"]
+    assert client.prompts[0]["max_tokens"] >= 1024  # 300 left real replies empty
     assert sent.count("<thread>") == 3
     assert "member" not in sent.lower() and "500" not in sent  # pseudonymized
     first, second = topics_of(session, gid)
